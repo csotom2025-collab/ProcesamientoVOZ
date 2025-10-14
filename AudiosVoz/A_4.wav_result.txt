@@ -1,0 +1,3 @@
+Archivo: D:/ProcesaminetoVoz/AudiosVoz/A_4.wav
+Energy: 523.9225
+Cruces por cero: 6970
