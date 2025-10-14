@@ -172,7 +172,7 @@ def dct_htk(audio_logfbank, dct_filter_num, filter_len):
 
 
 def main():
-    audio_path = 'cero_1.wav'
+    audio_path = 'C:/Users/usuario/Desktop/ProcesamientoVOZ/MFCC/cero_1.wav'
     print('Loading', audio_path)
     sample_rate, signal = load_audio(audio_path)
     audio = signal
@@ -186,7 +186,7 @@ def main():
         plt.title('Waveform')
         plt.grid(True)
         plt.tight_layout()
-        plt.show()  # Uncomment if you want to display the plot
+       # plt.show()  # desconmentar para ver el  plot
     except Exception:
         pass
 
@@ -232,6 +232,14 @@ def main():
     dct_mfcc = dct_htk(fbanklog, dct_filter_num, mel_filter_num)
     mfcc_htk = np.transpose(dct_mfcc)
     print('MFCC shape:', mfcc_htk.shape)
+    #PLOT MFCC
+    plt.imshow(mfcc_htk.T, aspect='auto', origin='lower', cmap='jet')
+    plt.colorbar()
+    plt.title('MFCC')
+    plt.xlabel('Time (frames)')
+    plt.ylabel('MFCC Coefficients')
+    plt.tight_layout() 
+    plt.show() # desconmentar para ver el  plot
 
 
 if __name__ == '__main__':

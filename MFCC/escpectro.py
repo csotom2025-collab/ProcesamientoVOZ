@@ -7,7 +7,7 @@ import IPython.display as Audio
 import matplotlib.pyplot as plt
 from librosa.display import specshow
 import seaborn as sbn
-sample_rate, signal = wavfile.read('cero_1.wav')  # File assumed to be in the same directory
+sample_rate, signal = wavfile.read('C:/Users/usuario/Desktop/ProcesamientoVOZ/MFCC/cero_1.wav')  # File assumed to be in the same directory
 
 # Convert stereo to mono by averaging channels if necessary
 if signal.ndim > 1:

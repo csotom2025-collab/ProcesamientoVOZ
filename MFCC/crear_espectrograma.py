@@ -14,7 +14,7 @@ print(np.__version__)
 
 # CARGANDO EL AUDIO
 
-sample_rate, signal = scipy.io.wavfile.read('D:\ProcesaminetoVoz\MFCC\cero_1.wav')  # File assumed to be in the same directory
+sample_rate, signal = scipy.io.wavfile.read('C:/Users/usuario/Desktop/ProcesamientoVOZ/MFCC/cero_1.wav')  # File assumed to be in the same directory
 
 #signal, sample_rate = librosa.load('cero1.wav', sr=11025)  # sr is the sample rate, default is 22050 Hz
 audio=signal
