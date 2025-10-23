@@ -1,17 +1,4 @@
-"""mfcc_htk2.py
-
-Converted from mfcc_htk2.ipynb — computes MFCC-like features using the same
-steps as the notebook. Run from the folder that contains `cero_1.wav`.
-
-Usage:
-    python mfcc_htk2.py
-
-This script tries to follow the original notebook logic with minimal changes
-to make it runnable as a standalone script.
-"""
-
 import os
-import sys
 import numpy as np
 import scipy
 from scipy.io import wavfile
@@ -45,16 +32,19 @@ def load_audio(path):
 
 def frame_audio(audio, FFT_size=2048, hop_size=10, sample_rate=44100):
     # hop_size in ms
-    frame_len = int(np.round(sample_rate * hop_size / 1000.0))
-    if len(audio) < FFT_size:
-        # pad with zeros
-        pad_width = FFT_size - len(audio)
-        audio = np.pad(audio, (0, pad_width), mode='constant')
-
+    #print (sample_rate)
+    #audio = np.pad(audio, int(FFT_size / 2), mode='reflect')
+    print(audio[120:130]);
+    frame_len = np.round(sample_rate * hop_size / 1000).astype(int)
+    
     frame_num = int((len(audio) - FFT_size) / frame_len) + 1
-    frames = np.zeros((frame_num, FFT_size), dtype=np.float32)
+    print (frame_len)
+    frames = np.zeros((frame_num,FFT_size))
+  
     for n in range(frame_num):
-        frames[n] = audio[n * frame_len: n * frame_len + FFT_size]
+        frames[n] = audio[n*frame_len:n*frame_len+FFT_size]
+        
+    
     return frames
 
 
@@ -79,24 +69,30 @@ def Melk(k, fres):
 
 
 def do_melk(filter_points, FFT_size, num_chan, mels, sample_rate):
-    fres = sample_rate / (FFT_size * 700.0)
+    fres = sample_rate/(FFT_size*700)
+    #print (fres)
     chan = 0
-    Nby2 = int(FFT_size / 2)
+    Nby2 = int (FFT_size / 2)
     maxChan = num_chan
     fblowChan = np.zeros((Nby2,), dtype=int)
-
-    for k in range(0, Nby2 - 1):
-        melk = Melk(k, fres)
+    
+    for k in range (0, Nby2 -1):
+        melk = Melk (k,fres)
+#        print (melk)
         if (k < 2 or k > Nby2):
-            fblowChan[k] = -1
+            fblowChan [k] = -1
         else:
-            while (chan <= maxChan and mels[chan] < melk):
-                chan += 1
-            fblowChan[k] = chan - 1
+           # print (melk)
+            #print (mels[chan])
+            while (mels[chan] < melk and chan <= maxChan):
+                chan+=1
+            fblowChan[k] = chan -1
 
-    for k in range(0, Nby2 - 2):
-        fblowChan[k] = fblowChan[k + 1]
-    fblowChan[Nby2 - 1] = num_chan
+
+    for k in range (0, Nby2 -2):
+        fblowChan [k] = fblowChan [k+1]
+    fblowChan[Nby2-1] = num_chan
+    
     return fblowChan
 
 
@@ -112,12 +108,9 @@ def create_vector_lowerChanWeights(filter_points, FFT_size, lowChan, mels, sampl
             fblowWt[k] = 0.0
         else:
             if chan > 0:
-                # Guard division by zero
-                denom = (mels[chan + 1] - mels[chan]) if (mels[chan + 1] - mels[chan]) != 0 else 1e-8
-                fblowWt[k] = ((mels[chan + 1]) - Melk(k + 1, fres)) / denom
+               fblowWt[k]=(( mels[chan+1]) - Melk (k+1,fres)) / ((mels[chan+1]) - (mels[chan]))
             else:
-                denom = (mels[1] - 0) if (mels[1] - 0) != 0 else 1e-8
-                fblowWt[1] = ((mels[1]) - Melk(k + 1, fres)) / denom
+                fblowWt[1] = (( mels [1]) - Melk (k+1,fres)) / (( mels[1] - 0))
     return fblowWt
 
 
@@ -178,26 +171,16 @@ def main():
     audio = signal
     print(f"Sample rate: {sample_rate}Hz")
     print(f"Audio duration: {len(signal) / sample_rate}s")
-
-    # Basic plotting (optional) - comment out display in headless environments
-    try:
-        plt.figure(figsize=(12, 3))
-        plt.plot(np.linspace(0, len(audio) / sample_rate, num=len(audio)), audio)
-        plt.title('Waveform')
-        plt.grid(True)
-        plt.tight_layout()
-       # plt.show()  # desconmentar para ver el  plot
-    except Exception:
-        pass
-
     # Framing
+    pre_emphasis = 0.97
+    signal=audio
+    emphasized = np.append(signal[0], signal[1:] - pre_emphasis * signal[:-1])
+    audio=emphasized
     hop_size = 10  # ms
     FFT_size = 256
     audio_framed = frame_audio(audio, FFT_size=FFT_size, hop_size=hop_size, sample_rate=sample_rate)
     print('Framed audio shape:', audio_framed.shape)
-
     # Pre-emphasis (applied per-frame)
-    pre_emphasis = 0.97
     frame_len = int(np.round(sample_rate * hop_size / 1000.0))
     frame_num = int((len(audio) - FFT_size) / frame_len) + 1
     for n in range(frame_num):
@@ -214,8 +197,8 @@ def main():
     for n in range(audio_fft.shape[1]):
         audio_fft[:, n] = fft.fft(audio_winT[:, n], axis=0)[:audio_fft.shape[0]]
     audio_fft = np.transpose(audio_fft)
-    mag_frames = np.abs(np.fft.fft(audio_window := audio_win, FFT_size))
-
+    
+    
     # Mel filter bank
     freq_min = 0
     freq_high = sample_rate / 2
@@ -224,7 +207,8 @@ def main():
 
     lowChan = do_melk(filter_points, FFT_size, mel_filter_num, mels, sample_rate)
     lowWt = create_vector_lowerChanWeights(filter_points, FFT_size, lowChan, mels, sample_rate)
-
+    audio_window = audio_win
+    mag_frames = np.absolute(np.fft.fft((audio_window), FFT_size))  # Magnitude of the FFT
     fbank = fill_bins(mag_frames, lowChan, lowWt, mel_filter_num, FFT_size)
     fbanklog = take_logs(fbank, mel_filter_num)
 
@@ -232,6 +216,7 @@ def main():
     dct_mfcc = dct_htk(fbanklog, dct_filter_num, mel_filter_num)
     mfcc_htk = np.transpose(dct_mfcc)
     print('MFCC shape:', mfcc_htk.shape)
+    print('MFCC (frames):\n', mfcc_htk)
     #PLOT MFCC
     plt.imshow(mfcc_htk.T, aspect='auto', origin='lower', cmap='jet')
     plt.colorbar()
