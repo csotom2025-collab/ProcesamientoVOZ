@@ -226,6 +226,15 @@ def main():
     plt.tight_layout() 
     plt.show() # desconmentar para ver el  plot
 
+    from librosa.display import specshow
+    specshow(mfcc_htk.T, x_axis='time', y_axis='hz')
+    plt.title('MFCC Librosa')
+    plt.xlabel('tiempo [s]')
+    plt.ylabel('frecuencia [Hz]')
+    plt.ylim(top=5000)
+    plt.colorbar()
+    plt.grid(True)
+    plt.show() # desconmentar para ver el  plot
 
 if __name__ == '__main__':
     main()

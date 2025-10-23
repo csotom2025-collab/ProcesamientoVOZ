@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
@@ -7,6 +7,9 @@ import scipy.io.wavfile as wav
 from scipy.signal import get_window
 from scipy.fftpack import dct
 import os
+from scipy.signal import resample_poly
+from fractions import Fraction
+
 
 class FrequencyAnalysisTab(ttk.Frame):
     def __init__(self, master, folder_var):
@@ -73,6 +76,8 @@ class FrequencyAnalysisTab(ttk.Frame):
         self.apply_zoom_btn.pack(side=tk.LEFT, padx=10)
         self.reset_zoom_btn = ttk.Button(self.options_frame, text="Reiniciar zoom", command=self.reset_zoom)
         self.reset_zoom_btn.pack(side=tk.LEFT, padx=10)
+        self.save_image_btn = ttk.Button(self.options_frame, text="Guardar imagen", command=self.save_current_view)
+        self.save_image_btn.pack(side=tk.LEFT, padx=10)
     def show_segment_spectrum_dialog(self):
         # Ventana para pedir inicio y duración
         dialog = tk.Toplevel(self)
@@ -174,6 +179,23 @@ class FrequencyAnalysisTab(ttk.Frame):
         self.ax.set_xlim(0, xlim[1])
         self.canvas.draw()
 
+    def save_current_view(self):
+        """Open a file dialog and save the current figure to the chosen path."""
+        # Suggest a default filename using current file and view
+        filename = self.analysis_file_var.get() or "figure"
+        view = self.current_view.get() if hasattr(self, 'current_view') else 'view'
+        default_name = f"{os.path.splitext(filename)[0]}_{view}.png"
+        filetypes = [("PNG image","*.png"), ("JPEG image","*.jpg"), ("PDF file","*.pdf"), ("SVG file","*.svg")]
+        path = filedialog.asksaveasfilename(defaultextension='.png', filetypes=filetypes, initialfile=default_name, title='Guardar imagen como')
+        if not path:
+            return
+        try:
+            # Save the current Matplotlib figure
+            self.figure.savefig(path, bbox_inches='tight')
+            self.analysis_result_label.config(text=f"Imagen guardada: {os.path.basename(path)}")
+        except Exception as e:
+            self.analysis_result_label.config(text=f"Error al guardar: {e}")
+
     def move_view(self, direction):
         xlim = self.ax.get_xlim()
         window = xlim[1] - xlim[0]
@@ -252,15 +274,18 @@ class FrequencyAnalysisTab(ttk.Frame):
         if not os.path.exists(path):
             self.analysis_result_label.config(text="El archivo no existe.")
             return
-        fs, data = wav.read(path)
-        if np.issubdtype(data.dtype, np.integer):
-            max_val = np.iinfo(data.dtype).max
-            data = data.astype(np.float32) / max_val
-        else:
-            data = data.astype(np.float32)
-        # If stereo, make mono by taking the first channel
-        if data.ndim > 1:
-            data = data[:, 0]
+        fs1, data = wav.read(path)
+        data, fs = self.load_with_scipy(path,sr=fs1)
+
+        """ if np.issubdtype(data.dtype, np.integer):
+                max_val = np.iinfo(data.dtype).max
+                data = data.astype(np.float32) / max_val
+            else:
+                data = data.astype(np.float32)
+            # If stereo, make mono by taking the first channel
+            if data.ndim > 1:
+                data = data[:, 0]"""
+        
         self.current_data = data
         self.current_fs = fs
         view = self.current_view.get()
@@ -619,3 +644,52 @@ class FrequencyAnalysisTab(ttk.Frame):
         print('MFCC HTK shape:', mfcc_htk.shape)
         print('MFCC HTK (frames):\n', mfcc_htk)
         return mfcc_htk
+    ############################################################################
+    ###################### Carga simulada a librosa ##########################
+    def load_with_scipy(self, path, sr=None, mono=True, dtype=np.float32, resample_limit_denominator=1000):
+        """
+        Leer WAV con scipy y comportarse como librosa.load:
+        - devuelve (y, sr)
+        - y es float32 normalizado en [-1, 1]
+        - opcionalmente mezcla a mono (mono=True)
+        - opcionalmente re-muestrea a sr (si sr is not None)
+
+        Nota: usa resample_poly (polyphase) para re-muestreo con buena calidad.
+        Si prefieres la máxima calidad posible, usa librosa.resample o resampy.
+        """
+        sr_orig, data = wav.read(path)
+
+        # Convertir a float32 y normalizar si viene en enteros
+        if np.issubdtype(data.dtype, np.integer):
+            iinfo = np.iinfo(data.dtype)
+            # dividir por el valor máximo positivo (igual que librosa/soundfile en la práctica)
+            data = data.astype(np.float32) / float(iinfo.max)
+        else:
+            data = data.astype(np.float32)
+
+        # Mezclar a mono si se requiere
+        if mono and data.ndim > 1:
+            # librosa hace una mezcla promediando canales
+            data = np.mean(data, axis=1)
+
+        # Re-muestrear si se pide una sr distinta
+        if sr is not None and sr != sr_orig:
+            # Obtener fracción racional aproximada sr/sr_orig para resample_poly
+            frac = Fraction(sr, sr_orig).limit_denominator(resample_limit_denominator)
+            up, down = frac.numerator, frac.denominator
+            # resample_poly espera 1D arrays; si multi-canal, habría que procesar por canal
+            if data.ndim > 1:
+                # aplicar por canal
+                chans = []
+                for c in range(data.shape[1]):
+                    chans.append(resample_poly(data[:, c], up, down))
+                data = np.stack(chans, axis=1)
+            else:
+                data = resample_poly(data, up, down)
+            out_sr = sr
+        else:
+            out_sr = sr_orig
+
+        # Forzar dtype de salida
+        data = data.astype(dtype, copy=False)
+        return data, out_sr
