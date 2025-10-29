@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from scipy.signal import resample_poly
 import numpy as np
 import scipy.io.wavfile as wav
 import os
@@ -183,7 +184,7 @@ class AnalysisTab(ttk.Frame):
         if not os.path.exists(path):
             self.analysis_result_label.config(text="El archivo no existe.")
             return
-        fs, data = wav.read(path)
+        data,fs= self.cargaAudio(path, sr=None, mono=True, dtype=np.float32)
         if data.ndim > 1:
             data = data[:,0]
         data = data.astype(float)
@@ -299,3 +300,51 @@ class AnalysisTab(ttk.Frame):
             self._repeat_job = None
             self._repeat_func = None
             self._repeat_args = None
+
+    def cargaAudio(self, path, sr=None, mono=True, dtype=np.float32, resample_limit_denominator=1000):
+        """
+        Leer WAV con scipy y comportarse como librosa.load:
+        - devuelve (y, sr)
+        - y es float32 normalizado en [-1, 1]
+        - opcionalmente mezcla a mono (mono=True)
+        - opcionalmente re-muestrea a sr (si sr is not None)
+
+        Nota: usa resample_poly (polyphase) para re-muestreo con buena calidad.
+        Si prefieres la máxima calidad posible, usa librosa.resample o resampy.
+        """
+        sr_orig, data = wav.read(path)
+
+        # Convertir a float32 y normalizar si viene en enteros
+        if np.issubdtype(data.dtype, np.integer):
+            iinfo = np.iinfo(data.dtype)
+            # dividir por el valor máximo positivo (igual que librosa/soundfile en la práctica)
+            data = data.astype(np.float32) / float(iinfo.max)
+        else:
+            data = data.astype(np.float32)
+
+        # Mezclar a mono si se requiere
+        if mono and data.ndim > 1:
+            # librosa hace una mezcla promediando canales
+            data = np.mean(data, axis=1)
+
+        # Re-muestrear si se pide una sr distinta
+        if sr is not None and sr != sr_orig:
+            # Obtener fracción racional aproximada sr/sr_orig para resample_poly
+            frac = Fraction(sr, sr_orig).limit_denominator(resample_limit_denominator)
+            up, down = frac.numerator, frac.denominator
+            # resample_poly espera 1D arrays; si multi-canal, habría que procesar por canal
+            if data.ndim > 1:
+                # aplicar por canal
+                chans = []
+                for c in range(data.shape[1]):
+                    chans.append(resample_poly(data[:, c], up, down))
+                data = np.stack(chans, axis=1)
+            else:
+                data = resample_poly(data, up, down)
+            out_sr = sr
+        else:
+            out_sr = sr_orig
+
+        # Forzar dtype de salida
+        data = data.astype(dtype, copy=False)
+        return data, out_sr
