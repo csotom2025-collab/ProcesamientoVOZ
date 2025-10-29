@@ -6,6 +6,7 @@ from scipy.signal import resample_poly
 import numpy as np
 import scipy.io.wavfile as wav
 import os
+from fractions import Fraction
 
 class AnalysisTab(ttk.Frame):
     
