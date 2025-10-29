@@ -1,14 +1,12 @@
-from functools import partial
+import os
 import tkinter as tk
 from tkinter import ttk, filedialog
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 import scipy.io.wavfile as wav
-from scipy.signal import get_window
-from scipy.fftpack import dct
-import os
-from scipy.signal import resample_poly
+from scipy.signal import get_window,resample_poly, freqz
+from scipy.linalg import solve_toeplitz
 from fractions import Fraction
 
 
@@ -25,18 +23,26 @@ class FrequencyAnalysisTab(ttk.Frame):
         self.analysis_file_menu.pack(side=tk.LEFT, padx=5)
         ttk.Label(top_frame, text="Vista:").pack(side=tk.LEFT, padx=10)
         self.current_view = tk.StringVar(value="Frecuencia")
-        self.view_menu = ttk.OptionMenu(top_frame, self.current_view, "Frecuencia", "Frecuencia", "Pitch (Cepstrum)", "Espectrograma", "MFCC", command=self.update_view)
+        self.view_menu = ttk.OptionMenu(top_frame, self.current_view, "Frecuencia", "Frecuencia", "Pitch (Cepstrum)", "Espectrograma", "MFCC", "LPC", command=self.update_view)
         self.view_menu.pack(side=tk.LEFT, padx=5)
         self.analysis_btn = ttk.Button(top_frame, text="Graficar", command=self.apply_analysis)
         self.analysis_btn.pack(side=tk.LEFT, padx=10)
         self.spectrogram_cmap = tk.StringVar(value="viridis")
         self.cmap_menu = ttk.OptionMenu(top_frame, self.spectrogram_cmap, "viridis", "viridis", "jet", "gray", "Greys")
         self.cmap_menu.pack_forget()  # Oculto por defecto
-        # Paneles de control debajo de la gráfica
+        # Paneles de control debajo de la gráfica (crearlos antes de referenciarlos)
         self.move_frame = ttk.Frame(self)
         self.interval_frame = ttk.Frame(self)
         self.options_frame = ttk.Frame(self)
         self.analysis_result_label = ttk.Label(self, text="")
+        # Control para ordenar LPC (solo visible cuando se selecciona la vista LPC)
+        self.lpc_order_var = tk.IntVar(value=12)
+        self.lpc_order_label = ttk.Label(self.options_frame, text="Orden LPC:")
+        # Usamos tk.Spinbox por compatibilidad
+        self.lpc_order_spin = tk.Spinbox(self.options_frame, from_=1, to=100, textvariable=self.lpc_order_var, width=5)
+        # Ocultar por defecto
+        self.lpc_order_label.pack_forget()
+        self.lpc_order_spin.pack_forget()
         # Inicializar gráfica principal
         self.figure = plt.Figure(figsize=(6,3), dpi=100)
         self.ax = self.figure.add_subplot(111)
@@ -84,14 +90,28 @@ class FrequencyAnalysisTab(ttk.Frame):
     ############################################################################
     def update_view(self, *args):
         view = self.current_view.get()
+        # Mostrar/ocultar colormap solo para espectrograma/MFCC
+        if view in ["Espectrograma", "MFCC"]:
+            self.cmap_menu.pack(side=tk.LEFT, padx=5)
+        else:
+            self.cmap_menu.pack_forget()
+
+        # Ajustar etiquetas de intervalo: tiempo para espectrograma/MFCC/Pitch, frecuencia para el resto
         if view in ["Espectrograma", "MFCC", "Pitch (Cepstrum)"]:
-            self.cmap_menu.pack(side=tk.LEFT, padx=5) if view in ["Espectrograma", "MFCC"] else self.cmap_menu.pack_forget()
             self.label_inicio.config(text="Inicio (s):")
             self.label_fin.config(text="Fin (s):")
         else:
-            self.cmap_menu.pack_forget()
             self.label_inicio.config(text="Inicio (Hz):")
             self.label_fin.config(text="Fin (Hz):")
+
+        # Mostrar control de orden LPC solo en vista LPC
+        if view == "LPC":
+            self.lpc_order_label.pack(side=tk.LEFT, padx=5)
+            self.lpc_order_spin.pack(side=tk.LEFT, padx=5)
+        else:
+            self.lpc_order_label.pack_forget()
+            self.lpc_order_spin.pack_forget()
+
         self.apply_analysis()
 
     def apply_manual_zoom(self):
@@ -231,7 +251,7 @@ class FrequencyAnalysisTab(ttk.Frame):
         if not os.path.exists(path):
             self.analysis_result_label.config(text="El archivo no existe.")
             return
-        data, fs = self.load_with_scipy(path)
+        data, fs = self.cargaAudio(path)
         self.current_data = data
         self.current_fs = fs
         view = self.current_view.get()
@@ -300,6 +320,79 @@ class FrequencyAnalysisTab(ttk.Frame):
                     self.analysis_result_label.config(text=f"Pitch promedio: {avg_pitch:.2f} Hz")
                 else:
                     self.analysis_result_label.config(text="No se pudo estimar el pitch.")
+            elif view == "LPC":
+                # Mostrar solo la comparación espectral FFT vs Sobre LPC (frame central)
+                NFFT = 2048
+                LPC_ORDER = int(self.lpc_order_var.get())
+                # Framing (25 ms windows, 10 ms hop)
+                frame_len = int(0.025 * fs)
+                hop_len = int(0.01 * fs)
+
+                # Obtener frames (ventaneo ya aplica ventana)
+                try:
+                    frames = self.ventaneo(data, frame_len, hop_len, window_type='hamming')
+                except Exception:
+                    # Fallback: simple framing sin ventana aplicada
+                    num_frames = 1 + int((len(data) - frame_len) / hop_len)
+                    frames = np.zeros((max(0, num_frames), frame_len))
+                    for i in range(num_frames):
+                        start = i * hop_len
+                        frames[i] = data[start:start+frame_len]
+
+                if frames.size == 0:
+                    self.analysis_result_label.config(text="No hay suficientes muestras para LPC.")
+                else:
+                    # Calcular LPC usando la implementación interna (sin librosa)
+                    lpc_matrix = self.calcular_lpc(data, fs, frame_size_ms=25.0, lpc_order=LPC_ORDER, hop_size_ms=10.0)
+                    if lpc_matrix is None or lpc_matrix.size == 0:
+                        self.analysis_result_label.config(text="No se pudieron calcular LPCs.")
+                        self.canvas.draw()
+                        return
+
+                    n_frames = lpc_matrix.shape[0]
+                    # Limpiar figura y usar un solo eje
+                    self.figure.clf()
+                    self.ax = self.figure.add_subplot(111)
+
+                    # Elegir frame central
+                    frame_index = min(n_frames - 1, n_frames // 2)
+                    if frame_index < frames.shape[0]:
+                        signal_frame = frames[frame_index]
+                    else:
+                        signal_frame = np.zeros(frame_len)
+
+                    coeffs = lpc_matrix[frame_index]
+                    lpc_coeffs = np.concatenate(([1.0], coeffs))
+
+                    # Respuesta en frecuencia del filtro LPC (sobre espectral)
+                    try:
+                        w, h_lpc = freqz(b=1.0, a=lpc_coeffs, worN=NFFT, fs=fs)
+                    except Exception:
+                        w, h_lpc = freqz(b=1.0, a=lpc_coeffs, worN=NFFT)
+                        w = w * fs / (2 * np.pi)
+
+                    spectrum_lpc_db = 20 * np.log10(np.abs(h_lpc) + 1e-10)
+
+                    # Espectro de la señal (FFT)
+                    signal_fft = np.fft.rfft(signal_frame, n=NFFT)
+                    frequencies_fft = np.fft.rfftfreq(NFFT, 1.0/fs)
+                    spectrum_signal_db = 20 * np.log10(np.abs(signal_fft) + 1e-10)
+
+                    # Escalar LPC para visualización
+                    scaling_factor = np.max(spectrum_signal_db) - np.max(spectrum_lpc_db)
+                    spectrum_lpc_db = spectrum_lpc_db + scaling_factor
+
+                    # Dibujar comparación en un único plot
+                    self.ax.plot(frequencies_fft, spectrum_signal_db, label='Espectro Original (FFT)', alpha=0.7)
+                    self.ax.plot(w, spectrum_lpc_db, label=f'Sobre Espectral (LPC Orden {LPC_ORDER})', color='darkorange', linewidth=2.0)
+                    self.ax.set_title(f'Comparación de Espectro: FFT vs. LPC (Frame {frame_index})')
+                    self.ax.set_xlabel('Frecuencia (Hz)')
+                    self.ax.set_ylabel('Magnitud (dB)')
+                    self.ax.set_xlim(0, fs/2)
+                    self.ax.legend()
+                    self.ax.grid(True, which='both', linestyle='--', alpha=0.5)
+                    self.figure.tight_layout()
+                    self.analysis_result_label.config(text="")
         self.canvas.draw()
 
     def pitch_cepstrum(self, signal, fs):
@@ -347,16 +440,92 @@ class FrequencyAnalysisTab(ttk.Frame):
         t_spec = np.array(t_spec)
         return S, t_spec, f_spec
     ############################################################################
-    ##################### MFCC HTK IMPLEMENTATION ##############################
+    ##################### Preparacion de la señal ##############################
     ############################################################################
-    def frame_audio(self, audio, FFT_size=2048, hop_size=10, sample_rate=44100):
-        # hop_size in ms
+    def preenfasis(self, signal, pre_emphasis_coeff=0.97):
+        """Aplica un filtro de preénfasis a la señal de audio."""
+        emphasized_signal = np.append(signal[0], signal[1:] - pre_emphasis_coeff * signal[:-1])
+        return emphasized_signal
+    
+    def ventaneo(self, signal, frame_size, hop_size, window_type='hamming'):
+        """Divide la señal en frames con ventana aplicada."""
+        num_frames = 1 + int((len(signal) - frame_size) / hop_size)
+        frames = np.zeros((num_frames, frame_size))
+        window = get_window(window_type, frame_size, fftbins=True)
+        for i in range(num_frames):
+            start = i * hop_size
+            frames[i] = signal[start:start + frame_size] * window
+        return frames
+    
+    def audioFFT(self, audio_win, FFT_size=2048):
+        audio_winT = np.transpose(audio_win)
+        audio_fft = np.empty((int(1 + FFT_size // 2), audio_winT.shape[1]), dtype=np.complex64, order='F')
+        for n in range(audio_fft.shape[1]):
+            audio_fft[:, n] = np.fft.fft(audio_winT[:, n], axis=0)[:audio_fft.shape[0]]
+        audio_fft = np.transpose(audio_fft)
+        return audio_fft
+    
+    def segmentacion(self, audio, FFT_size=2048, hop_size=10, sample_rate=44100):
         frame_len = np.round(sample_rate * hop_size / 1000).astype(int)
         frame_num = int((len(audio) - FFT_size) / frame_len) + 1
         frames = np.zeros((frame_num,FFT_size))
         for n in range(frame_num):
             frames[n] = audio[n*frame_len:n*frame_len+FFT_size]
         return frames
+    
+    def cargaAudio(self, path, sr=None, mono=True, dtype=np.float32, resample_limit_denominator=1000):
+        """
+        Leer WAV con scipy y comportarse como librosa.load:
+        - devuelve (y, sr)
+        - y es float32 normalizado en [-1, 1]
+        - opcionalmente mezcla a mono (mono=True)
+        - opcionalmente re-muestrea a sr (si sr is not None)
+
+        Nota: usa resample_poly (polyphase) para re-muestreo con buena calidad.
+        Si prefieres la máxima calidad posible, usa librosa.resample o resampy.
+        """
+        sr_orig, data = wav.read(path)
+
+        # Convertir a float32 y normalizar si viene en enteros
+        if np.issubdtype(data.dtype, np.integer):
+            iinfo = np.iinfo(data.dtype)
+            # dividir por el valor máximo positivo (igual que librosa/soundfile en la práctica)
+            data = data.astype(np.float32) / float(iinfo.max)
+        else:
+            data = data.astype(np.float32)
+
+        # Mezclar a mono si se requiere
+        if mono and data.ndim > 1:
+            # librosa hace una mezcla promediando canales
+            data = np.mean(data, axis=1)
+
+        # Re-muestrear si se pide una sr distinta
+        if sr is not None and sr != sr_orig:
+            # Obtener fracción racional aproximada sr/sr_orig para resample_poly
+            frac = Fraction(sr, sr_orig).limit_denominator(resample_limit_denominator)
+            up, down = frac.numerator, frac.denominator
+            # resample_poly espera 1D arrays; si multi-canal, habría que procesar por canal
+            if data.ndim > 1:
+                # aplicar por canal
+                chans = []
+                for c in range(data.shape[1]):
+                    chans.append(resample_poly(data[:, c], up, down))
+                data = np.stack(chans, axis=1)
+            else:
+                data = resample_poly(data, up, down)
+            out_sr = sr
+        else:
+            out_sr = sr_orig
+
+        # Forzar dtype de salida
+        data = data.astype(dtype, copy=False)
+        return data, out_sr
+
+
+    ############################################################################
+    ##################### MFCC HTK IMPLEMENTACION ##############################
+    ############################################################################
+   
     
     def freq_to_mel(self, freq):
         return 2595.0 * np.log10(1.0 + freq / 700.0)
@@ -487,30 +656,26 @@ class FrequencyAnalysisTab(ttk.Frame):
         # Framing
         pre_emphasis = 0.97
         signal=audio
-        emphasized = np.append(signal[0], signal[1:] - pre_emphasis * signal[:-1])
+        emphasized = self.preenfasis(signal, pre_emphasis_coeff=pre_emphasis)
         audio=emphasized
         hop_size = 10  # ms
         FFT_size = 256
-        audio_framed = self.frame_audio(audio, FFT_size=FFT_size, hop_size=hop_size, sample_rate=sample_rate)
+        audio_framed = self.segmentacion(audio, FFT_size=FFT_size, hop_size=hop_size, sample_rate=sample_rate)
         print('Framed audio shape:', audio_framed.shape)
         # Pre-emphasis (applied per-frame)
         frame_len = int(np.round(sample_rate * hop_size / 1000.0))
         frame_num = int((len(audio) - FFT_size) / frame_len) + 1
         for n in range(frame_num):
             for i in range(FFT_size - 1, 0, -1):
-                audio_framed[n, i] = audio_framed[n, i] - (audio_framed[n, i - 1] * pre_emphasis)
+                audio_framed[n, i] =self.preenfasis(audio_framed[n, :], pre_emphasis_coeff=pre_emphasis)[i]
 
         # Windowing
-        window = get_window('hamm', FFT_size, fftbins=True)
-        audio_win = audio_framed * window
+        audio_win = self.ventaneo(audio, FFT_size, frame_len, window_type='hamming')
 
         # FFT
-        audio_winT = np.transpose(audio_win)
-        audio_fft = np.empty((int(1 + FFT_size // 2), audio_winT.shape[1]), dtype=np.complex64, order='F')
-        for n in range(audio_fft.shape[1]):
-            audio_fft[:, n] = np.fft.fft(audio_winT[:, n], axis=0)[:audio_fft.shape[0]]
-        audio_fft = np.transpose(audio_fft)
-        
+        audio_fft = self.audioFFT(audio_win, FFT_size=FFT_size)
+        audio_fft = np.abs(audio_fft)
+        print('FFT (magnitude):\n', audio_fft)
         
         # Mel filter bank
         freq_min = 0
@@ -532,51 +697,78 @@ class FrequencyAnalysisTab(ttk.Frame):
         print('MFCC HTK (frames):\n', mfcc_htk)
         return mfcc_htk
     ############################################################################
-    ###################### Carga simulada a librosa ##########################
-    def load_with_scipy(self, path, sr=None, mono=True, dtype=np.float32, resample_limit_denominator=1000):
+    ##################### CALCULO LPC ##########################################
+    ############################################################################
+    def lpc_costum(self, frame: np.ndarray, order: int):
         """
-        Leer WAV con scipy y comportarse como librosa.load:
-        - devuelve (y, sr)
-        - y es float32 normalizado en [-1, 1]
-        - opcionalmente mezcla a mono (mono=True)
-        - opcionalmente re-muestrea a sr (si sr is not None)
-
-        Nota: usa resample_poly (polyphase) para re-muestreo con buena calidad.
-        Si prefieres la máxima calidad posible, usa librosa.resample o resampy.
+        Extrae los coeficientes LPC de un frame usando el método de autocorrelación.
+        Resuelve las ecuaciones de Yule-Walker: R·a = r
         """
-        sr_orig, data = wav.read(path)
+        N = len(frame)
+        frame_autocorr_full = np.correlate(frame, frame, mode='full')
+        mid_point = N - 1
+        autocorr = frame_autocorr_full[mid_point : mid_point + order + 1]
+        # En las ecuaciones de Yule-Walker la forma es R·a = -r (nota el signo -)
+        # donde r = autocorr[1:order+1]. Por tanto aplicamos el signo negativo al RHS.
+        r_col = autocorr[0:order]
+        r_rhs = -autocorr[1:order+1]
 
-        # Convertir a float32 y normalizar si viene en enteros
-        if np.issubdtype(data.dtype, np.integer):
-            iinfo = np.iinfo(data.dtype)
-            # dividir por el valor máximo positivo (igual que librosa/soundfile en la práctica)
-            data = data.astype(np.float32) / float(iinfo.max)
-        else:
-            data = data.astype(np.float32)
+        # Regularización numérica: si r_col[0] es muy pequeño o la matriz parece
+        # cercana a singuralidad, añadimos un pequeño término en la diagonal (equivalente
+        # a incrementar r_col[0]) para estabilizar la solución.
+        eps = 1e-8
+        if np.abs(r_col[0]) < eps:
+            r_col = r_col.copy()
+            r_col[0] += eps
 
-        # Mezclar a mono si se requiere
-        if mono and data.ndim > 1:
-            # librosa hace una mezcla promediando canales
-            data = np.mean(data, axis=1)
+        try:
+            lpc_coeffs = solve_toeplitz(r_col, r_rhs)
+            # Asegurar tipo float
+            return np.asarray(lpc_coeffs, dtype=float)
+        except np.linalg.LinAlgError:
+            # Si falla, devolver ceros para no romper el flujo
+            return np.zeros(order, dtype=float)
+        
+    def calcular_lpc(self, signal: np.ndarray, fs: int, frame_size_ms: float = 25.0, lpc_order: int = 12, hop_size_ms: float = 10.0):
+        """
+        Extrae coeficientes LPC por frame usando framing de frame_size_ms (ms) y hop_size_ms (ms).
+        Esta versión procura reproducir la segmentación y ventana usadas en LpcComparacion.py
+        (25 ms frames, 10 ms hop, ventana Hamming).
+        Retorna una matriz de forma (n_frames, lpc_order) con los coeficientes (sin el 1.0 inicial).
+        """
+        if signal is None or len(signal) == 0:
+            return np.empty((0, lpc_order))
 
-        # Re-muestrear si se pide una sr distinta
-        if sr is not None and sr != sr_orig:
-            # Obtener fracción racional aproximada sr/sr_orig para resample_poly
-            frac = Fraction(sr, sr_orig).limit_denominator(resample_limit_denominator)
-            up, down = frac.numerator, frac.denominator
-            # resample_poly espera 1D arrays; si multi-canal, habría que procesar por canal
-            if data.ndim > 1:
-                # aplicar por canal
-                chans = []
-                for c in range(data.shape[1]):
-                    chans.append(resample_poly(data[:, c], up, down))
-                data = np.stack(chans, axis=1)
-            else:
-                data = resample_poly(data, up, down)
-            out_sr = sr
-        else:
-            out_sr = sr_orig
+        # Pre-énfasis (igual aproximación que en el ejemplo)
+        pre_emphasis = 0.97
+        emphasized = self.preenfasis(signal, pre_emphasis_coeff=pre_emphasis)
 
-        # Forzar dtype de salida
-        data = data.astype(dtype, copy=False)
-        return data, out_sr
+        # Calcular tamaños de ventana en muestras
+        frame_len = int(np.round(frame_size_ms * fs / 1000.0))
+        hop_len = int(np.round(hop_size_ms * fs / 1000.0))
+        if frame_len <= 0:
+            frame_len = 1
+        if hop_len <= 0:
+            hop_len = 1
+
+        # Ventaneo (hamming)
+        try:
+            frames = self.ventaneo(emphasized, frame_len, hop_len, window_type='hamming')
+        except Exception:
+            # Fallback manual
+            num_frames = 1 + int((len(emphasized) - frame_len) / hop_len)
+            frames = np.zeros((max(0, num_frames), frame_len))
+            for i in range(num_frames):
+                start = i * hop_len
+                frames[i] = emphasized[start:start + frame_len] * np.hamming(frame_len)
+
+        if frames.size == 0:
+            return np.empty((0, lpc_order))
+
+        m = frames.shape[0]
+        LPC_COf = np.zeros((m, lpc_order))
+
+        for i, frm in enumerate(frames):
+            LPC_COf[i, :] = self.lpc_costum(frm, lpc_order)
+
+        return LPC_COf

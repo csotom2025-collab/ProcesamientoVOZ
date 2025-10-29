@@ -5,7 +5,7 @@ from scipy.linalg import solve_toeplitz
 import matplotlib.pyplot as plt  # <-- Importamos matplotlib
 
 # --- Parámetros Configurables ---
-LPC_ORDER = 12
+LPC_ORDER = 100
 FRAME_SEC = 0.025
 STEP_SEC = 0.010
 PRE_EMPHASIS = 0.97

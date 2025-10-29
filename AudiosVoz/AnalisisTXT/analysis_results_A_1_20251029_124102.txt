@@ -1,0 +1,3 @@
+=== Análisis de A_1.wav ===
+LPC: error calculando LPC: Incompatible dimensions.
+

@@ -144,11 +144,39 @@ class ProcessTab(ttk.Frame):
                         results += "\n"
                 
                 # Calcular LPC si está seleccionado
-                #if self.check_vars['lpc'].get():
-                    
-                    #lpc_coeffs = calculate_lpc(wav_path)
-                    #if lpc_coeffs is not None:
-                        #results += f"LPC (primeros 5 coeficientes): {lpc_coeffs[:5]}\n"
+                if self.check_vars['lpc'].get():
+                    # Intentar obtener el valor del control de orden LPC de forma robusta.
+                    # Primero intentamos acceder al objeto de la aplicación principal (AudioApp) si está disponible
+                    try:
+                        app = getattr(self.master, 'master', None)
+                        if app is not None and hasattr(app, 'tab_frequency'):
+                            lpc_order = int(app.tab_frequency.lpc_order_var.get())
+                        else:
+                            # Fallback: intentar obtener el widget por su path en el notebook
+                            try:
+                                lpc_order = int(self.master.nametowidget('.!notebook.!frequencyanalysistab').lpc_order_var.get())
+                            except Exception:
+                                # Último recurso: usar un valor por defecto razonable
+                                lpc_order = 12
+                    except Exception:
+                        lpc_order = 12
+
+                    # Crear una instancia ligera sin __init__ y llamar al método correcto (calcular_lpc)
+                    try:
+                        helper = frequency.FrequencyAnalysisTab.__new__(frequency.FrequencyAnalysisTab)
+                        # pasar fs como segundo argumento: calcular_lpc(self, signal, fs, frame_size_ms=..., lpc_order=..., ...)
+                        lpc_coeffs = frequency.FrequencyAnalysisTab.calcular_lpc(helper, data, fs, lpc_order)
+                        if lpc_coeffs is not None:
+                            results += f"LPC Coeficientes :\n"
+                            for i, coef_ventana in enumerate(lpc_coeffs):
+                                results += f"[{i + 1} ["
+                                for j, coef in enumerate(coef_ventana):
+                                    results += f"{coef:.4f}, "
+                                results = results[:-2]  
+                                results += f"]]"
+                        results += "\n"
+                    except Exception as e:
+                        results += f"LPC: error calculando LPC: {e}\n"
                 
                 # Calcular espectro si está seleccionado
                 if self.check_vars['espectro'].get():
