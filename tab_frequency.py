@@ -1,3 +1,4 @@
+from functools import partial
 import tkinter as tk
 from tkinter import ttk, filedialog
 import matplotlib.pyplot as plt
@@ -78,70 +79,8 @@ class FrequencyAnalysisTab(ttk.Frame):
         self.reset_zoom_btn.pack(side=tk.LEFT, padx=10)
         self.save_image_btn = ttk.Button(self.options_frame, text="Guardar imagen", command=self.save_current_view)
         self.save_image_btn.pack(side=tk.LEFT, padx=10)
-    def show_segment_spectrum_dialog(self):
-        # Ventana para pedir inicio y duración
-        dialog = tk.Toplevel(self)
-        dialog.title("Espectro de segmento")
-        ttk.Label(dialog, text="Inicio (s):").pack(padx=10, pady=5)
-        start_var = tk.StringVar(value="0")
-        start_entry = ttk.Entry(dialog, textvariable=start_var, width=8)
-        start_entry.pack(padx=10, pady=5)
-        ttk.Label(dialog, text="Duración (s):").pack(padx=10, pady=5)
-        dur_var = tk.StringVar(value="0.04")
-        dur_entry = ttk.Entry(dialog, textvariable=dur_var, width=8)
-        dur_entry.pack(padx=10, pady=5)
-        def plot_segment():
-            try:
-                start = float(start_var.get())
-                dur = float(dur_var.get())
-            except ValueError:
-                ttk.Label(dialog, text="Valores inválidos").pack()
-                return
-            if self.current_data is None or self.current_fs is None:
-                ttk.Label(dialog, text="No hay señal cargada").pack()
-                return
-            fs = self.current_fs
-            data = self.current_data
-            start_idx = int(start * fs)
-            end_idx = int((start + dur) * fs)
-            if start_idx < 0 or end_idx > len(data) or end_idx <= start_idx:
-                ttk.Label(dialog, text="Rango fuera de la señal").pack()
-                return
-            segment = data[start_idx:end_idx]
-            # Calcular espectro
-            N = len(segment)
-            freqs = np.fft.rfftfreq(N, 1/fs)
-            fft_vals = np.abs(np.fft.rfft(segment))
-            # Ventana nueva para mostrar
-            spec_win = tk.Toplevel(self)
-            spec_win.title("Espectro de segmento")
-            fig = plt.Figure(figsize=(5,3), dpi=100)
-            ax = fig.add_subplot(111)
-            ax.plot(freqs, fft_vals)
-            ax.set_xlabel("Frecuencia [Hz]")
-            ax.set_ylabel("Magnitud")
-            ax.set_title(f"Espectro: inicio={start}s, dur={dur}s")
-            canvas = FigureCanvasTkAgg(fig, master=spec_win)
-            canvas.get_tk_widget().pack(fill='both', expand=True)
-            canvas.draw()
-        ttk.Button(dialog, text="Graficar", command=plot_segment).pack(padx=10, pady=10)
-        # Empaquetar los paneles de control después de la gráfica
-        self.figure = plt.Figure(figsize=(6,3), dpi=100)
-        self.ax = self.figure.add_subplot(111)
-        self.canvas = FigureCanvasTkAgg(self.figure, master=self)
-        # Empaquetar la gráfica primero, luego los controles
-        self.canvas.get_tk_widget().pack(fill='both', expand=True, padx=10, pady=10)
-        self.move_frame.pack(fill='x', padx=10, pady=5)
-        self.interval_frame.pack(fill='x', padx=10, pady=5)
-        self.options_frame.pack(fill='x', padx=10, pady=5)
-        self.analysis_result_label.pack(fill='x', padx=10, pady=5)
-        self.refresh_analysis_file_list()
-        self.current_data = None
-        self.current_fs = None
-        self._repeat_job = None
-        self._repeat_func = None
-        self._repeat_args = None
 
+    
     def update_view(self, *args):
         view = self.current_view.get()
         if view in ["Espectrograma", "MFCC", "Pitch (Cepstrum)"]:
@@ -277,14 +216,7 @@ class FrequencyAnalysisTab(ttk.Frame):
         fs1, data = wav.read(path)
         data, fs = self.load_with_scipy(path,sr=fs1)
 
-        """ if np.issubdtype(data.dtype, np.integer):
-                max_val = np.iinfo(data.dtype).max
-                data = data.astype(np.float32) / max_val
-            else:
-                data = data.astype(np.float32)
-            # If stereo, make mono by taking the first channel
-            if data.ndim > 1:
-                data = data[:, 0]"""
+        
         
         self.current_data = data
         self.current_fs = fs
