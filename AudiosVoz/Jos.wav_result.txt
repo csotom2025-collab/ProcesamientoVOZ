@@ -1,3 +1,0 @@
-Archivo: D:/ProcesaminetoVoz/AudiosVoz/Jos.wav
-Energy: 1407.2007
-Cruces por cero: 1867

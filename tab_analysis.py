@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
@@ -74,6 +74,8 @@ class AnalysisTab(ttk.Frame):
         options_frame.pack(fill='x', padx=10, pady=5)
         self.reset_zoom_btn = ttk.Button(options_frame, text="Reiniciar zoom", command=self.reset_zoom)
         self.reset_zoom_btn.pack(side=tk.LEFT, padx=10)
+        self.save_image_btn = ttk.Button(options_frame, text="Guardar imagen", command=self.save_current_view)
+        self.save_image_btn.pack(side=tk.LEFT, padx=10)
         self.refresh_analysis_file_list()
         self._repeat_job = None
         self._repeat_func = None
@@ -127,6 +129,38 @@ class AnalysisTab(ttk.Frame):
             self.analysis_file_var.set(wav_files[0])
         else:
             self.analysis_file_var.set("")
+    
+    def save_current_view(self):
+        """Open a file dialog and save the current figure to the chosen path."""
+        # Suggest a default filename using current file and view
+        filename = self.analysis_file_var.get() or "figure"
+        view = self.current_view.get() if hasattr(self, 'current_view') else 'view'
+        default_name = f"{os.path.splitext(filename)[0]}_{view}.png"
+        filetypes = [("PNG image","*.png"), ("JPEG image","*.jpg"), ("PDF file","*.pdf"), ("SVG file","*.svg")]
+        # Guardar en carpeta ImgFrecuencia dentro de la carpeta seleccionada si es posible
+        folder = None
+        try:
+            folder = self.folder_var.get() if hasattr(self, 'folder_var') else None
+        except Exception:
+            folder = None
+        if folder and os.path.isdir(folder):
+            img_dir = os.path.join(folder, 'ImgTiempo')
+            try:
+                os.makedirs(img_dir, exist_ok=True)
+            except Exception:
+                img_dir = folder
+        else:
+            img_dir = os.getcwd()
+
+        path = filedialog.asksaveasfilename(defaultextension='.png', filetypes=filetypes, initialfile=default_name, initialdir=img_dir, title='Guardar imagen como')
+        if not path:
+            return
+        try:
+            # Save the current Matplotlib figure
+            self.figure.savefig(path, bbox_inches='tight')
+            self.analysis_result_label.config(text=f"Imagen guardada: {os.path.basename(path)}")
+        except Exception as e:
+            self.analysis_result_label.config(text=f"Error al guardar: {e}")
 
     def update_analysis_file(self, value):
         self.analysis_file_var.set(value)
@@ -157,7 +191,7 @@ class AnalysisTab(ttk.Frame):
         self.current_fs = fs
         t = np.arange(len(data))/fs
 
-        # Solo limpia el eje, no el figure ni lo recrea
+        
         self.ax.clear()
         view = self.current_view.get()
         energia = self.calcular_energia(data)

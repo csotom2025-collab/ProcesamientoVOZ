@@ -79,8 +79,9 @@ class FrequencyAnalysisTab(ttk.Frame):
         self.reset_zoom_btn.pack(side=tk.LEFT, padx=10)
         self.save_image_btn = ttk.Button(self.options_frame, text="Guardar imagen", command=self.save_current_view)
         self.save_image_btn.pack(side=tk.LEFT, padx=10)
-
-    
+    ############################################################################
+    ##################### Control de la vista ##################################
+    ############################################################################
     def update_view(self, *args):
         view = self.current_view.get()
         if view in ["Espectrograma", "MFCC", "Pitch (Cepstrum)"]:
@@ -125,7 +126,22 @@ class FrequencyAnalysisTab(ttk.Frame):
         view = self.current_view.get() if hasattr(self, 'current_view') else 'view'
         default_name = f"{os.path.splitext(filename)[0]}_{view}.png"
         filetypes = [("PNG image","*.png"), ("JPEG image","*.jpg"), ("PDF file","*.pdf"), ("SVG file","*.svg")]
-        path = filedialog.asksaveasfilename(defaultextension='.png', filetypes=filetypes, initialfile=default_name, title='Guardar imagen como')
+        # Guardar en carpeta ImgFrecuencia dentro de la carpeta seleccionada si es posible
+        folder = None
+        try:
+            folder = self.folder_var.get() if hasattr(self, 'folder_var') else None
+        except Exception:
+            folder = None
+        if folder and os.path.isdir(folder):
+            img_dir = os.path.join(folder, 'ImgFrecuencia')
+            try:
+                os.makedirs(img_dir, exist_ok=True)
+            except Exception:
+                img_dir = folder
+        else:
+            img_dir = os.getcwd()
+
+        path = filedialog.asksaveasfilename(defaultextension='.png', filetypes=filetypes, initialfile=default_name, initialdir=img_dir, title='Guardar imagen como')
         if not path:
             return
         try:
@@ -202,7 +218,9 @@ class FrequencyAnalysisTab(ttk.Frame):
 
     def update_analysis_file(self, value):
         self.analysis_file_var.set(value)
-
+    ############################################################################
+    ##################### Analisis de la señal  ################################
+    ############################################################################
     def apply_analysis(self):
         folder = self.folder_var.get()
         filename = self.analysis_file_var.get()
@@ -213,11 +231,7 @@ class FrequencyAnalysisTab(ttk.Frame):
         if not os.path.exists(path):
             self.analysis_result_label.config(text="El archivo no existe.")
             return
-        fs1, data = wav.read(path)
-        data, fs = self.load_with_scipy(path,sr=fs1)
-
-        
-        
+        data, fs = self.load_with_scipy(path)
         self.current_data = data
         self.current_fs = fs
         view = self.current_view.get()
@@ -332,67 +346,8 @@ class FrequencyAnalysisTab(ttk.Frame):
         f_spec = np.fft.rfftfreq(nfft, 1/fs)
         t_spec = np.array(t_spec)
         return S, t_spec, f_spec
-
-    def calcular_mfcc(self, data, fs, n_mfcc=13, win_len=0.025, hop_len=0.01):
-        """
-        Calcula los coeficientes MFCC de una señal de audio sin librerías externas.
-        Args:
-            data: señal de audio (numpy array)
-            fs: frecuencia de muestreo
-            n_mfcc: número de coeficientes MFCC
-            win_len: longitud de ventana en segundos
-            hop_len: salto entre ventanas en segundos
-        Returns:
-            mfccs: matriz de coeficientes MFCC (ventanas x coeficientes)
-            t_mfcc: vector de tiempo de cada ventana
-        """
-        # 1. Pre-emphasis
-        emphasized = np.append(data[0], data[1:] - 0.97 * data[:-1])
-        # 2. framentación
-        frame_len = int(win_len * fs)
-        frame_step = int(hop_len * fs)
-        signal_length = len(emphasized)
-        num_frames = int(np.ceil(float(np.abs(signal_length - frame_len)) / frame_step))
-        pad_signal_length = num_frames * frame_step + frame_len
-        z = np.zeros((pad_signal_length - signal_length))
-        pad_signal = np.append(emphasized, z)
-        indices = np.tile(np.arange(0, frame_len), (num_frames, 1)) + np.tile(np.arange(0, num_frames * frame_step, frame_step), (frame_len, 1)).T
-        frames = pad_signal[indices.astype(np.int32, copy=False)]
-        # 3. Ventanamiento
-        frames *= np.hamming(frame_len)
-        # 4. FFT y Power Spectrum
-        NFFT = 512
-        mag_frames = np.absolute(np.fft.rfft(frames, NFFT))
-        pow_frames = ((1.0 / NFFT) * (mag_frames ** 2))
-        # 5. Filtro de bancos Mel
-        nfilt = 28
-        low_freq_mel = 0
-        high_freq_mel = 2595 * np.log10(1 + (fs / 2) / 700)
-        mel_points = np.linspace(low_freq_mel, high_freq_mel, nfilt + 2)
-        hz_points = 700 * (10**(mel_points / 2595) - 1)
-        bin = np.floor((NFFT + 1) * hz_points / fs).astype(int)
-        fbank = np.zeros((nfilt, int(NFFT / 2 + 1)))
-        #Ventanas triangulares
-        for m in range(1, nfilt + 1):
-            f_m_minus = bin[m - 1]
-            f_m = bin[m]
-            f_m_plus = bin[m + 1]
-            for k in range(f_m_minus, f_m):
-                fbank[m - 1, k] = (k - bin[m - 1]) / (bin[m] - bin[m - 1])
-            for k in range(f_m, f_m_plus):
-                fbank[m - 1, k] = (bin[m + 1] - k) / (bin[m + 1] - bin[m])
-        filter_banks = np.dot(pow_frames, fbank.T)
-        filter_banks = np.where(filter_banks == 0, np.finfo(float).eps, filter_banks)
-        filter_banks = 20 * np.log10(filter_banks)
-        # 6. Coficientes para DCT para obtener MFCC
-        mfccs = dct(filter_banks, type=2, axis=1, norm='ortho')[:, :n_mfcc]
-        # 7. Tiempo de cada ventana
-        t_mfcc = np.arange(mfccs.shape[0]) * hop_len
-        print('MFCC shape:', mfccs.shape)
-        print('MFCC (frames):\n', mfccs)
-        print('Tiempo MFCC (s):\n', t_mfcc)
-        return mfccs, t_mfcc
-    ##################### MFCC HTK IMPLEMENTATION #####################
+    ############################################################################
+    ##################### MFCC HTK IMPLEMENTATION ##############################
     ############################################################################
     def frame_audio(self, audio, FFT_size=2048, hop_size=10, sample_rate=44100):
         # hop_size in ms

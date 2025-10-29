@@ -43,7 +43,7 @@ class ProcessTab(ttk.Frame):
         }
         
         # Crear checkboxes
-        ttk.Checkbutton(checks_frame, text="Frecuencia fundamental", 
+        ttk.Checkbutton(checks_frame, text="Pitch (Cepstrum)", 
                         variable=self.check_vars['freq']).pack(side=tk.LEFT, padx=5)
         ttk.Checkbutton(checks_frame, text="Energía", 
                         variable=self.check_vars['energia']).pack(side=tk.LEFT, padx=5)
@@ -96,48 +96,51 @@ class ProcessTab(ttk.Frame):
                 # Formatear resultados
                 results += f"=== Análisis de {wav_file} ===\n"
                 
-                # Calcular frecuencia fundamental si está seleccionada
+                # Calcular pitch_cepstrum si está seleccionada
                 if self.check_vars['freq'].get():
-                    frame_length = int(0.025 * fs)  # 25ms
-                    frames = np.array_split(data, len(data) // frame_length)
-                    freqs = []
-                    for frame in frames:
-                        if len(frame) >= frame_length:
-                            autocorr = np.correlate(frame, frame, mode='full')
-                            autocorr = autocorr[len(autocorr)//2:]
-                            peaks = np.where((autocorr[1:-1] > autocorr[0:-2]) & (autocorr[1:-1] > autocorr[2:]))[0] + 1
-                            if len(peaks) > 0:
-                                first_peak = peaks[0]
-                                if first_peak > 0:
-                                    freq = fs / first_peak
-                                    if 50 <= freq <= 500:  # Rango típico de voz
-                                        freqs.append(freq)
-                    freq_fundamental = np.mean(freqs) if freqs else 0
-                    results += f"Frecuencia fundamental: {freq_fundamental:.2f} Hz\n"
+                    win_len = int(0.04 * fs)  # 40 ms
+                    hop_len = int(0.01 * fs)  # 10 ms
+                    pitches = []
+                    times = []
+                    for start in range(0, len(data) - win_len, hop_len):
+                        segment = data[start:start+win_len]
+                        pitch = frequency.FrequencyAnalysisTab.pitch_cepstrum(None,segment, fs)
+                        pitches.append(pitch)
+                        times.append(start/fs)
+
+                    avg_pitch = np.mean([p for p in pitches if 50 < p < 500])
+                    results += f"Pitch promedio:: {avg_pitch:.2f} Hz\n"
                 
                 # Calcular energía si está seleccionada
                 if self.check_vars['energia'].get():
-                    energia = np.sum(data**2)
+                    energia = tim.AnalysisTab.calcular_energia(None, data)
                     results += f"Energía: {energia:.4f}\n"
                 
                 # Calcular cruces por cero si está seleccionado
                 if self.check_vars['cruces'].get():
-                    cruces = np.sum(np.diff(np.signbit(data)))
-                    results += f"Cruces por cero: {cruces}\n"
+                    cruces = tim.AnalysisTab.cruces_por_cero(None, data)
+                    results+=f"Cruces por cero: {len(cruces)}\n puntos: ["
+                    for punto in cruces:
+                        results += f"{punto}, "
+                    results = results[:-2]  
+                    results += "]\n"
                 
                 # Calcular MFCC si está seleccionado
                 if self.check_vars['mfcc'].get():
-                    # llamar al método de instancia definiéndole self=None porque
-                    # la implementación de calcular_mfcc no utiliza atributos de instancia
-                    mfccs, t_mfcc = frequency.FrequencyAnalysisTab.calcular_mfcc(None, data, fs)
+                    # Crear una instancia ligera sin llamar a __init__ para poder usar los métodos de instancia
+                    # (evita crear widgets/GUI al instanciar normalmente)
+                    helper = frequency.FrequencyAnalysisTab.__new__(frequency.FrequencyAnalysisTab)
+                    mfccs = frequency.FrequencyAnalysisTab.mfcc_htk(helper, data, fs)
                     if mfccs is not None:
-                        results += "MFCC Coeficientes:\n"
+                        results += "MFCC Coeficientes:[num ventana [coficientes ventana]]\n"
                         # Para cada ventana de tiempo
                         for i, coef_ventana in enumerate(mfccs):
-                            results += f"Ventana {i + 1}:\n"
+                            results += f"[{i + 1} ["
                             # Para cada coeficiente en la ventana
                             for j, coef in enumerate(coef_ventana):
-                                results += f"  Coef {j + 1}: {coef:.4f}\n"
+                                results += f"{coef:.4f}, "
+                            results = results[:-2]  
+                            results += f"]]"
                         results += "\n"
                 
                 # Calcular LPC si está seleccionado
@@ -149,8 +152,9 @@ class ProcessTab(ttk.Frame):
                 
                 # Calcular espectro si está seleccionado
                 if self.check_vars['espectro'].get():
-                    # llamar al método de instancia pasando None como self
-                    S, t_spec, f_spec = frequency.FrequencyAnalysisTab.calcular_espectrograma(None, data, fs)
+                    # Crear una instancia ligera sin __init__ y llamar al método de instancia
+                    helper = frequency.FrequencyAnalysisTab.__new__(frequency.FrequencyAnalysisTab)
+                    S, t_spec, f_spec = frequency.FrequencyAnalysisTab.calcular_espectrograma(helper, data, fs)
                     if S is not None:
                         # S tiene forma (frecuencia x tiempo); tomar la energía promedio por frecuencia
                         spectrum = np.mean(S, axis=1)
@@ -163,11 +167,14 @@ class ProcessTab(ttk.Frame):
         
         self.result_text.delete(1.0, tk.END)
         self.result_text.insert(tk.END, results)
-        # Guardar todos los resultados en un archivo de texto con marca temporal
+        # Guardar todos los resultados en un archivo de texto dentro de la carpeta AnalisisTXT
         try:
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            out_name = f"analysis_results_{wav_file}.txt"
-            out_path = os.path.join(folder, out_name)
+            analysis_dir = os.path.join(folder, 'AnalisisTXT')
+            os.makedirs(analysis_dir, exist_ok=True)
+            base_name = os.path.splitext(wav_file)[0]
+            out_name = f"analysis_results_{base_name}_{timestamp}.txt"
+            out_path = os.path.join(analysis_dir, out_name)
             with open(out_path, 'w', encoding='utf-8') as out_f:
                 out_f.write(results)
             # Informar al usuario dónde se guardó
