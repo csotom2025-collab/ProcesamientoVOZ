@@ -8,6 +8,7 @@ import scipy.io.wavfile as wav
 from scipy.signal import get_window,resample_poly, freqz
 from scipy.linalg import solve_toeplitz
 from fractions import Fraction
+from scipy.fftpack import dct
 
 
 class FrequencyAnalysisTab(ttk.Frame):
@@ -24,7 +25,8 @@ class FrequencyAnalysisTab(ttk.Frame):
         ttk.Label(top_frame, text="Vista:").pack(side=tk.LEFT, padx=10)
         self.current_view = tk.StringVar(value="Frecuencia")
         # Añadida la opción "Mel (Log)" para visualizar el espectro mel (bank log)
-        self.view_menu = ttk.OptionMenu(top_frame, self.current_view, "Frecuencia", "Frecuencia", "Pitch (Cepstrum)", "Espectrograma", "MFCC", "Mel (Log)", "LPC", command=self.update_view)
+        self.view_menu = ttk.OptionMenu(top_frame, self.current_view, "Frecuencia", "Frecuencia", "Pitch (Cepstrum)", 
+                                      "Espectrograma", "MFCC", "MFCC (Custom)", "Filter Banks (Custom)", "Mel (Log)", "LPC", command=self.update_view)
         self.view_menu.pack(side=tk.LEFT, padx=5)
         self.analysis_btn = ttk.Button(top_frame, text="Graficar", command=self.apply_analysis)
         self.analysis_btn.pack(side=tk.LEFT, padx=10)
@@ -91,14 +93,14 @@ class FrequencyAnalysisTab(ttk.Frame):
     ############################################################################
     def update_view(self, *args):
         view = self.current_view.get()
-        # Mostrar/ocultar colormap solo para espectrograma/MFCC/Mel
-        if view in ["Espectrograma", "MFCC", "Mel (Log)"]:
+        # Mostrar/ocultar colormap solo para espectrograma/MFCC/Mel/Filter Banks
+        if view in ["Espectrograma", "MFCC", "MFCC (Custom)", "Filter Banks (Custom)", "Mel (Log)"]:
             self.cmap_menu.pack(side=tk.LEFT, padx=5)
         else:
             self.cmap_menu.pack_forget()
 
         # Ajustar etiquetas de intervalo: tiempo para espectrograma/MFCC/Pitch, frecuencia para el resto
-        if view in ["Espectrograma", "MFCC", "Pitch (Cepstrum)", "Mel (Log)"]:
+        if view in ["Espectrograma", "MFCC", "MFCC (Custom)", "Pitch (Cepstrum)", "Mel (Log)"]:
             self.label_inicio.config(text="Inicio (s):")
             self.label_fin.config(text="Fin (s):")
         else:
@@ -283,8 +285,34 @@ class FrequencyAnalysisTab(ttk.Frame):
             im = self.ax.imshow(mfccs.T, aspect='auto', origin='lower', cmap=self.spectrogram_cmap.get(), extent=[0, len(data)/fs, 0, mfccs.shape[1]])
             self.ax.set_xlabel("Tiempo [s]")
             self.ax.set_ylabel("Coeficiente MFCC HTK")
-            self.ax.set_title(f"MFCC: {filename}")
+            self.ax.set_title(f"MFCC HTK: {filename}")
             self.colorbar = self.figure.colorbar(im, ax=self.ax, label="Valor", orientation='vertical')
+            self.figure.subplots_adjust(right=0.85)
+            self.analysis_result_label.config(text="")
+        elif view == "MFCC (Custom)":
+            self.figure.clf()
+            self.ax = self.figure.add_subplot(111)
+            mfccs, t_mfcc, filter_banks = self.calcular_mfcc(data, fs)
+            im = self.ax.imshow(mfccs.T, aspect='auto', origin='lower', cmap=self.spectrogram_cmap.get(), extent=[t_mfcc[0], t_mfcc[-1], 0, mfccs.shape[1]])
+            self.ax.set_xlabel("Tiempo [s]")
+            self.ax.set_ylabel("Coeficiente MFCC")
+            self.ax.set_title(f"MFCC Custom: {filename}")
+            self.colorbar = self.figure.colorbar(im, ax=self.ax, label="Valor", orientation='vertical')
+            self.figure.subplots_adjust(right=0.85)
+            self.analysis_result_label.config(text="")
+        elif view == "Filter Banks (Custom)":
+            self.figure.clf()
+            self.ax = self.figure.add_subplot(111)
+            mfccs, t_mfcc, filter_banks = self.calcular_mfcc(data, fs)
+            # Convertir a dB para mejor visualización
+            # Ensure positive values and avoid log of zero
+            filter_banks_positive = np.maximum(filter_banks, 1e-10)
+            filter_banks_db = 20 * np.log10(filter_banks_positive)
+            im = self.ax.imshow(filter_banks_db.T, aspect='auto', origin='lower', cmap=self.spectrogram_cmap.get(), extent=[t_mfcc[0], t_mfcc[-1], 0, filter_banks.shape[1]])
+            self.ax.set_xlabel("Tiempo [s]")
+            self.ax.set_ylabel("Filtro Mel")
+            self.ax.set_title(f"Filter Banks Custom: {filename}")
+            self.colorbar = self.figure.colorbar(im, ax=self.ax, label="Energía (dB)", orientation='vertical')
             self.figure.subplots_adjust(right=0.85)
             self.analysis_result_label.config(text="")
         elif view == "Mel (Log)":
@@ -654,25 +682,22 @@ class FrequencyAnalysisTab(ttk.Frame):
     
     
     def mfcc_htk(self,signal=None,sample_rate=None):
-        """_summary_
-
+        """
+        Calcula los coeficientes MFCC usando el método HTK.
         Args:
             sample_rate : fs. Defaults to None.
             signal: data. Defaults to None.
         """
-        audio = signal
         print(f"Sample rate: {sample_rate}Hz")
         print(f"Audio duration: {len(signal) / sample_rate}s")
         # Framing
         pre_emphasis = 0.97
-        signal=audio
         emphasized = self.preenfasis(signal, pre_emphasis_coeff=pre_emphasis)
         audio=emphasized
         hop_size = 10  # ms
         FFT_size = 256
         audio_framed = self.segmentacion(audio, FFT_size=FFT_size, hop_size=hop_size, sample_rate=sample_rate)
         print('Framed audio shape:', audio_framed.shape)
-        # Pre-emphasis (applied per-frame)
         frame_len = int(np.round(sample_rate * hop_size / 1000.0))
         frame_num = int((len(audio) - FFT_size) / frame_len) + 1
         for n in range(frame_num):
@@ -708,7 +733,71 @@ class FrequencyAnalysisTab(ttk.Frame):
         # fbanklog: (n_frames, n_mel_bins+1)
         print('MFCC HTK shape:', mfcc_htk.shape)
         print('MFCC HTK (frames):\n', mfcc_htk)
+        print('Log-Mel Filterbank shape:', fbanklog.shape)
+        print('Log-Mel Filterbank (frames):\n', fbanklog)
         return mfcc_htk, fbanklog
+    
+    
+    def calcular_mfcc(self, data, fs, n_mfcc=28, win_len=0.025, hop_len=0.01):
+        """
+        Calcula los coeficientes MFCC de una señal de audio sin librerías externas.
+        Args:
+            data: señal de audio (numpy array)
+            fs: frecuencia de muestreo
+            n_mfcc: número de coeficientes MFCC
+            win_len: longitud de ventana en segundos
+            hop_len: salto entre ventanas en segundos
+        Returns:
+            mfccs: matriz de coeficientes MFCC (ventanas x coeficientes)
+            t_mfcc: vector de tiempo de cada ventana
+            filter_banks: matriz de filter banks (ventanas x filtros)
+        """
+        # 1. Pre-emphasis
+        emphasized = self.preenfasis(data, pre_emphasis_coeff=0.97)
+        # 2. framentación
+        frame_len = int(win_len * fs)
+        frame_step = int(hop_len * fs)
+        signal_length = len(emphasized)
+        num_frames = int(np.ceil(float(np.abs(signal_length - frame_len)) / frame_step))
+        pad_signal_length = num_frames * frame_step + frame_len
+        z = np.zeros((pad_signal_length - signal_length))
+        pad_signal = np.append(emphasized, z)
+        frames = self.segmentacion(pad_signal, frame_len, frame_step, fs)
+        # 3. Ventanamiento
+        frames *= self.ventaneo(np.ones(frame_len), frame_len, frame_len, window_type='hamming')[0]
+        # 4. FFT y Power Spectrum
+        NFFT = 256
+        mag_frames = np.absolute(np.fft.rfft(frames, NFFT))
+        pow_frames = ((1.0 / NFFT) * (mag_frames ** 2))
+        # 5. Filtro de bancos Mel
+        nfilt = 28
+        low_freq_mel = 0
+        high_freq_mel = 2595 * np.log10(1 + (fs / 2) / 700)
+        mel_points = np.linspace(low_freq_mel, high_freq_mel, nfilt + 2)
+        hz_points = 700 * (10**(mel_points / 2595) - 1)
+        bin = np.floor((NFFT + 1) * hz_points / fs).astype(int)
+        fbank = np.zeros((nfilt, int(NFFT / 2 + 1)))
+        #Ventanas triangulares
+        for m in range(1, nfilt + 1):
+            f_m_minus = bin[m - 1]
+            f_m = bin[m]
+            f_m_plus = bin[m + 1]
+            for k in range(f_m_minus, f_m):
+                fbank[m - 1, k] = (k - bin[m - 1]) / (bin[m] - bin[m - 1])
+            for k in range(f_m, f_m_plus):
+                fbank[m - 1, k] = (bin[m + 1] - k) / (bin[m + 1] - bin[m])
+        filter_banks = np.dot(pow_frames, fbank.T)
+        filter_banks = np.where(filter_banks == 0, np.finfo(float).eps, filter_banks)
+        filter_banks = 20 * np.log10(filter_banks)
+        # 6. Coficientes para DCT para obtener MFCC
+        mfccs = dct(filter_banks, type=2, axis=1, norm='ortho')[:, :n_mfcc]
+        # 7. Tiempo de cada ventana
+        t_mfcc = np.arange(mfccs.shape[0]) * hop_len
+        print('MFCC Custom shape:', mfccs.shape)
+        print('MFCC Custom (frames):\n', mfccs)
+        print('Filter Banks shape:', filter_banks.shape)
+        print('Filter Banks (frames):\n', filter_banks)
+        return mfccs, t_mfcc, filter_banks
     ############################################################################
     ##################### CALCULO LPC ##########################################
     ############################################################################
