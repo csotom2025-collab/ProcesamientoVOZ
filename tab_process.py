@@ -146,7 +146,6 @@ class ProcessTab(ttk.Frame):
                 # Calcular LPC si está seleccionado
                 if self.check_vars['lpc'].get():
                     # Intentar obtener el valor del control de orden LPC de forma robusta.
-                    # Primero intentamos acceder al objeto de la aplicación principal (AudioApp) si está disponible
                     try:
                         app = getattr(self.master, 'master', None)
                         if app is not None and hasattr(app, 'tab_frequency'):
@@ -160,11 +159,8 @@ class ProcessTab(ttk.Frame):
                                 lpc_order = 12
                     except Exception:
                         lpc_order = 12
-
-                    # Crear una instancia ligera sin __init__ y llamar al método correcto (calcular_lpc)
                     try:
                         helper = frequency.FrequencyAnalysisTab.__new__(frequency.FrequencyAnalysisTab)
-                        # pasar fs como segundo argumento: calcular_lpc(self, signal, fs, frame_size_ms=..., lpc_order=..., ...)
                         lpc_coeffs = frequency.FrequencyAnalysisTab.calcular_lpc(helper, data, fs, lpc_order)
                         if lpc_coeffs is not None:
                             results += f"LPC Coeficientes :\n"

@@ -23,7 +23,8 @@ class FrequencyAnalysisTab(ttk.Frame):
         self.analysis_file_menu.pack(side=tk.LEFT, padx=5)
         ttk.Label(top_frame, text="Vista:").pack(side=tk.LEFT, padx=10)
         self.current_view = tk.StringVar(value="Frecuencia")
-        self.view_menu = ttk.OptionMenu(top_frame, self.current_view, "Frecuencia", "Frecuencia", "Pitch (Cepstrum)", "Espectrograma", "MFCC", "LPC", command=self.update_view)
+        # Añadida la opción "Mel (Log)" para visualizar el espectro mel (bank log)
+        self.view_menu = ttk.OptionMenu(top_frame, self.current_view, "Frecuencia", "Frecuencia", "Pitch (Cepstrum)", "Espectrograma", "MFCC", "Mel (Log)", "LPC", command=self.update_view)
         self.view_menu.pack(side=tk.LEFT, padx=5)
         self.analysis_btn = ttk.Button(top_frame, text="Graficar", command=self.apply_analysis)
         self.analysis_btn.pack(side=tk.LEFT, padx=10)
@@ -90,14 +91,14 @@ class FrequencyAnalysisTab(ttk.Frame):
     ############################################################################
     def update_view(self, *args):
         view = self.current_view.get()
-        # Mostrar/ocultar colormap solo para espectrograma/MFCC
-        if view in ["Espectrograma", "MFCC"]:
+        # Mostrar/ocultar colormap solo para espectrograma/MFCC/Mel
+        if view in ["Espectrograma", "MFCC", "Mel (Log)"]:
             self.cmap_menu.pack(side=tk.LEFT, padx=5)
         else:
             self.cmap_menu.pack_forget()
 
         # Ajustar etiquetas de intervalo: tiempo para espectrograma/MFCC/Pitch, frecuencia para el resto
-        if view in ["Espectrograma", "MFCC", "Pitch (Cepstrum)"]:
+        if view in ["Espectrograma", "MFCC", "Pitch (Cepstrum)", "Mel (Log)"]:
             self.label_inicio.config(text="Inicio (s):")
             self.label_fin.config(text="Fin (s):")
         else:
@@ -278,14 +279,24 @@ class FrequencyAnalysisTab(ttk.Frame):
         elif view == "MFCC":
             self.figure.clf()
             self.ax = self.figure.add_subplot(111)
-            #mfccs, t_mfcc = self.calcular_mfcc(data, fs)
-            mfcchtk=self.mfcc_htk(data, fs)
-            #im = self.ax.imshow(mfccs.T, aspect='auto', origin='lower', cmap=self.spectrogram_cmap.get(), extent=[t_mfcc[0], t_mfcc[-1], 0, mfccs.shape[1]])
-            im= self.ax.imshow(mfcchtk.T, aspect='auto', origin='lower', cmap=self.spectrogram_cmap.get(), extent=[0, len(data)/fs, 0, mfcchtk.shape[1]])
+            mfccs, fbanklog = self.mfcc_htk(data, fs)
+            im = self.ax.imshow(mfccs.T, aspect='auto', origin='lower', cmap=self.spectrogram_cmap.get(), extent=[0, len(data)/fs, 0, mfccs.shape[1]])
             self.ax.set_xlabel("Tiempo [s]")
             self.ax.set_ylabel("Coeficiente MFCC HTK")
             self.ax.set_title(f"MFCC: {filename}")
             self.colorbar = self.figure.colorbar(im, ax=self.ax, label="Valor", orientation='vertical')
+            self.figure.subplots_adjust(right=0.85)
+            self.analysis_result_label.config(text="")
+        elif view == "Mel (Log)":
+            # Nueva vista: muestra el espectro mel (log-mel filterbank)
+            self.figure.clf()
+            self.ax = self.figure.add_subplot(111)
+            mfccs, fbanklog = self.mfcc_htk(data, fs)
+            im = self.ax.imshow(fbanklog.T, aspect='auto', origin='lower', cmap=self.spectrogram_cmap.get(), extent=[0, len(data)/fs, 0, fbanklog.shape[1]])
+            self.ax.set_xlabel("Tiempo [s]")
+            self.ax.set_ylabel("Canal Mel")
+            self.ax.set_title(f"Mel (Log) - Espectro Mel: {filename}")
+            self.colorbar = self.figure.colorbar(im, ax=self.ax, label="Log energía", orientation='vertical')
             self.figure.subplots_adjust(right=0.85)
             self.analysis_result_label.config(text="")
         else:
@@ -525,7 +536,6 @@ class FrequencyAnalysisTab(ttk.Frame):
     ############################################################################
     ##################### MFCC HTK IMPLEMENTACION ##############################
     ############################################################################
-   
     
     def freq_to_mel(self, freq):
         return 2595.0 * np.log10(1.0 + freq / 700.0)
@@ -693,9 +703,12 @@ class FrequencyAnalysisTab(ttk.Frame):
         dct_filter_num = 13
         dct_mfcc = self.dct_htk(fbanklog, dct_filter_num, mel_filter_num)
         mfcc_htk = np.transpose(dct_mfcc)
+        # Retornar tanto los MFCCs como el log-mel filterbank para visualización adicional
+        # mfcc_htk: (n_frames, n_mfcc)
+        # fbanklog: (n_frames, n_mel_bins+1)
         print('MFCC HTK shape:', mfcc_htk.shape)
         print('MFCC HTK (frames):\n', mfcc_htk)
-        return mfcc_htk
+        return mfcc_htk, fbanklog
     ############################################################################
     ##################### CALCULO LPC ##########################################
     ############################################################################
