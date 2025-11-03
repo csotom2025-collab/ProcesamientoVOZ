@@ -1,0 +1,3 @@
+=== Análisis de A_1.wav ===
+MFCC custom: error al calcular: 'tuple' object has no attribute 'size'
+

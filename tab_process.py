@@ -3,10 +3,11 @@ from tkinter import ttk, filedialog, messagebox
 import os
 import numpy as np
 import scipy.io.wavfile as wav
-from scipy.fftpack import dct
+from scipy.signal import resample_poly
 import datetime
 import tab_analysis as tim
 import tab_frequency as frequency
+from fractions import Fraction
 
 class ProcessTab(ttk.Frame):
     def __init__(self, master, folder_var):
@@ -34,28 +35,31 @@ class ProcessTab(ttk.Frame):
         
         # Variables para los checkboxes
         self.check_vars = {
-            'freq': tk.BooleanVar(value=True),
-            'energia': tk.BooleanVar(value=True),
-            'cruces': tk.BooleanVar(value=True),
-            'mfcc': tk.BooleanVar(value=True),
-            'lpc': tk.BooleanVar(value=True),
-            'espectro': tk.BooleanVar(value=True)
+            'freq': tk.BooleanVar(value=False),
+            'energia': tk.BooleanVar(value=False),
+            'cruces': tk.BooleanVar(value=False),
+            'mfcc': tk.BooleanVar(value=False),
+            'mfcc_custom': tk.BooleanVar(value=False),
+            'lpc': tk.BooleanVar(value=False),
+            'espectro': tk.BooleanVar(value=False)
         }
         
         # Crear checkboxes
         ttk.Checkbutton(checks_frame, text="Pitch (Cepstrum)", 
-                        variable=self.check_vars['freq']).pack(side=tk.LEFT, padx=5)
+                variable=self.check_vars['freq']).pack(side=tk.LEFT, padx=5)
         ttk.Checkbutton(checks_frame, text="Energía", 
-                        variable=self.check_vars['energia']).pack(side=tk.LEFT, padx=5)
+                variable=self.check_vars['energia']).pack(side=tk.LEFT, padx=5)
         ttk.Checkbutton(checks_frame, text="Cruces por cero", 
-                        variable=self.check_vars['cruces']).pack(side=tk.LEFT, padx=5)
-        ttk.Checkbutton(checks_frame, text="MFCC", 
-                        variable=self.check_vars['mfcc']).pack(side=tk.LEFT, padx=5)
+                variable=self.check_vars['cruces']).pack(side=tk.LEFT, padx=5)
+        ttk.Checkbutton(checks_frame, text="MFCC estándar", 
+                variable=self.check_vars['mfcc']).pack(side=tk.LEFT, padx=5)
+        ttk.Checkbutton(checks_frame, text="MFCC custom", 
+                variable=self.check_vars['mfcc_custom']).pack(side=tk.LEFT, padx=5)
         ttk.Checkbutton(checks_frame, text="LPC", 
-                        variable=self.check_vars['lpc']).pack(side=tk.LEFT, padx=5)
+                variable=self.check_vars['lpc']).pack(side=tk.LEFT, padx=5)
         ttk.Checkbutton(checks_frame, text="Espectro", 
-                        variable=self.check_vars['espectro']).pack(side=tk.LEFT, padx=5)
-        
+                variable=self.check_vars['espectro']).pack(side=tk.LEFT, padx=5)
+            
         # Área de resultados
         self.result_text = tk.Text(self, height=10)
         self.result_text.pack(fill='both', padx=10, pady=10)
@@ -75,7 +79,54 @@ class ProcessTab(ttk.Frame):
         if folder_selected:
             self.folder_var.set(folder_selected)
             self.refresh_file_list()
-            
+    def cargaAudio(self, path, sr=None, mono=True, dtype=np.float32, resample_limit_denominator=1000):
+        """
+        Leer WAV con scipy y comportarse como librosa.load:
+        - devuelve (y, sr)
+        - y es float32 normalizado en [-1, 1]
+        - opcionalmente mezcla a mono (mono=True)
+        - opcionalmente re-muestrea a sr (si sr is not None)
+
+        Nota: usa resample_poly (polyphase) para re-muestreo con buena calidad.
+        Si prefieres la máxima calidad posible, usa librosa.resample o resampy.
+        """
+        sr_orig, data = wav.read(path)
+
+        # Convertir a float32 y normalizar si viene en enteros
+        if np.issubdtype(data.dtype, np.integer):
+            iinfo = np.iinfo(data.dtype)
+            # dividir por el valor máximo positivo (igual que librosa/soundfile en la práctica)
+            data = data.astype(np.float32) / float(iinfo.max)
+        else:
+            data = data.astype(np.float32)
+
+        # Mezclar a mono si se requiere
+        if mono and data.ndim > 1:
+            # librosa hace una mezcla promediando canales
+            data = np.mean(data, axis=1)
+
+        # Re-muestrear si se pide una sr distinta
+        if sr is not None and sr != sr_orig:
+            # Obtener fracción racional aproximada sr/sr_orig para resample_poly
+            frac = Fraction(sr, sr_orig).limit_denominator(resample_limit_denominator)
+            up, down = frac.numerator, frac.denominator
+            # resample_poly espera 1D arrays; si multi-canal, habría que procesar por canal
+            if data.ndim > 1:
+                # aplicar por canal
+                chans = []
+                for c in range(data.shape[1]):
+                    chans.append(resample_poly(data[:, c], up, down))
+                data = np.stack(chans, axis=1)
+            else:
+                data = resample_poly(data, up, down)
+            out_sr = sr
+        else:
+            out_sr = sr_orig
+
+        # Forzar dtype de salida
+        data = data.astype(dtype, copy=False)
+        return data, out_sr
+
     def process_audio(self):
         selected = [self.file_listbox.get(i) for i in self.file_listbox.curselection()]
         if not selected:
@@ -89,7 +140,7 @@ class ProcessTab(ttk.Frame):
             wav_path = os.path.join(folder, wav_file)
             try:
                 # Leer el archivo WAV
-                fs, data = wav.read(wav_path)
+                data,fs=self.cargaAudio(wav_path)
                 if len(data.shape) > 1:  # Si es estéreo, convertir a mono
                     data = np.mean(data, axis=1)
                 
@@ -108,8 +159,13 @@ class ProcessTab(ttk.Frame):
                         pitches.append(pitch)
                         times.append(start/fs)
 
-                    avg_pitch = np.mean([p for p in pitches if 50 < p < 500])
-                    results += f"Pitch promedio:: {avg_pitch:.2f} Hz\n"
+                    # Calcular pitch promedio de manera segura (evitar listas vacías/NaN)
+                    valid_pitches = [p for p in pitches if np.isfinite(p) and 50 < p < 500]
+                    if valid_pitches:
+                        avg_pitch = float(np.mean(valid_pitches))
+                        results += f"Pitch promedio: {avg_pitch:.2f} Hz\n"
+                    else:
+                        results += "Pitch promedio: N/A\n"
                 
                 # Calcular energía si está seleccionada
                 if self.check_vars['energia'].get():
@@ -125,23 +181,72 @@ class ProcessTab(ttk.Frame):
                     results = results[:-2]  
                     results += "]\n"
                 
-                # Calcular MFCC si está seleccionado
+                # Calcular MFCC estándar si está seleccionado
                 if self.check_vars['mfcc'].get():
-                    # Crear una instancia ligera sin llamar a __init__ para poder usar los métodos de instancia
-                    # (evita crear widgets/GUI al instanciar normalmente)
                     helper = frequency.FrequencyAnalysisTab.__new__(frequency.FrequencyAnalysisTab)
-                    mfccs = frequency.FrequencyAnalysisTab.mfcc_htk(helper, data, fs)
-                    if mfccs is not None:
-                        results += "MFCC Coeficientes:[num ventana [coficientes ventana]]\n"
-                        # Para cada ventana de tiempo
-                        for i, coef_ventana in enumerate(mfccs):
-                            results += f"[{i + 1} ["
-                            # Para cada coeficiente en la ventana
-                            for j, coef in enumerate(coef_ventana):
-                                results += f"{coef:.4f}, "
-                            results = results[:-2]  
-                            results += f"]]"
-                        results += "\n"
+                    mfccs_return = frequency.FrequencyAnalysisTab.mfcc_htk(helper, data, fs)
+                    if mfccs_return is not None:
+                        if isinstance(mfccs_return, (tuple, list)):
+                            mfccs = mfccs_return[0]
+                        else:
+                            mfccs = mfccs_return
+                        mfccs = np.asarray(mfccs)
+                        if mfccs.size == 0:
+                            results += "MFCC: no hay coeficientes disponibles\n"
+                        else:
+                            results += "MFCC Coeficientes estándar:[num ventana [coeficientes ventana]]\n"
+                            for i in range(mfccs.shape[0]):
+                                coef_ventana = mfccs[i]
+                                coef_ventana = np.asarray(coef_ventana).ravel()
+                                results += f"[{i + 1} ["
+                                for k, coef in enumerate(coef_ventana):
+                                    try:
+                                        results += f"{float(coef):.4f}, "
+                                    except Exception:
+                                        row_str = np.array2string(coef_ventana, precision=4, separator=', ')
+                                        results += row_str + ", "
+                                        break
+                                if results.endswith(', '):
+                                    results = results[:-2]
+                                results += f"]]\n"
+                            results += "\n"
+                # Calcular MFCC custom si está seleccionado
+                if self.check_vars['mfcc_custom'].get():
+                    try:
+                        helper = frequency.FrequencyAnalysisTab.__new__(frequency.FrequencyAnalysisTab)
+                        mfccs_custom = frequency.FrequencyAnalysisTab.calcular_mfcc(helper, data, fs)
+
+                        # `calcular_mfcc` puede devolver un ndarray o una tupla/lista
+                        # similar a la rama MFCC estándar; manejar ambos casos.
+                        if isinstance(mfccs_custom, (tuple, list)):
+                            if len(mfccs_custom) == 0:
+                                mfccs_arr = np.asarray([])
+                            else:
+                                mfccs_arr = np.asarray(mfccs_custom[0])
+                        else:
+                            mfccs_arr = np.asarray(mfccs_custom)
+
+                        if mfccs_arr.size == 0:
+                            results += "MFCC custom: no hay coeficientes disponibles\n"
+                        else:
+                            results += "MFCC Coeficientes custom:[num ventana [coeficientes ventana]]\n"
+                            for i in range(mfccs_arr.shape[0]):
+                                coef_ventana = mfccs_arr[i]
+                                coef_ventana = np.asarray(coef_ventana).ravel()
+                                results += f"[{i + 1} ["
+                                for k, coef in enumerate(coef_ventana):
+                                    try:
+                                        results += f"{float(coef):.4f}, "
+                                    except Exception:
+                                        row_str = np.array2string(coef_ventana, precision=4, separator=', ')
+                                        results += row_str + ", "
+                                        break
+                                if results.endswith(', '):
+                                    results = results[:-2]
+                                results += f"]]\n"
+                            results += "\n"
+                    except Exception as e:
+                        results += f"MFCC custom: error al calcular: {e}\n"
                 
                 # Calcular LPC si está seleccionado
                 if self.check_vars['lpc'].get():
@@ -182,7 +287,12 @@ class ProcessTab(ttk.Frame):
                     if S is not None:
                         # S tiene forma (frecuencia x tiempo); tomar la energía promedio por frecuencia
                         spectrum = np.mean(S, axis=1)
-                        results += f"Espectro: {spectrum}\n"
+                        # Formatear el array de forma segura para evitar errores de format()
+                        try:
+                            spectrum_str = np.array2string(spectrum, precision=4, separator=', ')
+                        except Exception:
+                            spectrum_str = str(spectrum.tolist())
+                        results += f"Espectro: {spectrum_str}\n"
                 
                 results += "\n"
                 

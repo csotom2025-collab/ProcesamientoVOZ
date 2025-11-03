@@ -1,5 +1,0 @@
-=== Análisis de A_1.wav ===
-Pitch promedio:: 188.88 Hz
-Energía: 106722833.0000
-Error procesando A_1.wav: type object 'AnalysisTab' has no attribute 'calcular_cruces_cero'
-

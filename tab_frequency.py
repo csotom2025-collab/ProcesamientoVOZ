@@ -24,9 +24,9 @@ class FrequencyAnalysisTab(ttk.Frame):
         self.analysis_file_menu.pack(side=tk.LEFT, padx=5)
         ttk.Label(top_frame, text="Vista:").pack(side=tk.LEFT, padx=10)
         self.current_view = tk.StringVar(value="Frecuencia")
-        # Añadida la opción "Mel (Log)" para visualizar el espectro mel (bank log)
+        # Añadida la opción "Filter Banks HTK" para visualizar el espectro mel (bank log)
         self.view_menu = ttk.OptionMenu(top_frame, self.current_view, "Frecuencia", "Frecuencia", "Pitch (Cepstrum)", 
-                                      "Espectrograma", "MFCC", "MFCC (Custom)", "Filter Banks (Custom)", "Mel (Log)", "LPC", command=self.update_view)
+                                "Espectrograma", "MFCC", "MFCC (Custom)", "Filter Banks (Custom)", "Filter Banks HTK", "LPC", command=self.update_view)
         self.view_menu.pack(side=tk.LEFT, padx=5)
         self.analysis_btn = ttk.Button(top_frame, text="Graficar", command=self.apply_analysis)
         self.analysis_btn.pack(side=tk.LEFT, padx=10)
@@ -94,13 +94,13 @@ class FrequencyAnalysisTab(ttk.Frame):
     def update_view(self, *args):
         view = self.current_view.get()
         # Mostrar/ocultar colormap solo para espectrograma/MFCC/Mel/Filter Banks
-        if view in ["Espectrograma", "MFCC", "MFCC (Custom)", "Filter Banks (Custom)", "Mel (Log)"]:
+        if view in ["Espectrograma", "MFCC", "MFCC (Custom)", "Filter Banks (Custom)", "Filter Banks HTK"]:
             self.cmap_menu.pack(side=tk.LEFT, padx=5)
         else:
             self.cmap_menu.pack_forget()
 
         # Ajustar etiquetas de intervalo: tiempo para espectrograma/MFCC/Pitch, frecuencia para el resto
-        if view in ["Espectrograma", "MFCC", "MFCC (Custom)", "Pitch (Cepstrum)", "Mel (Log)"]:
+        if view in ["Espectrograma", "MFCC", "MFCC (Custom)", "Pitch (Cepstrum)", "Filter Banks HTK"]:
             self.label_inicio.config(text="Inicio (s):")
             self.label_fin.config(text="Fin (s):")
         else:
@@ -138,8 +138,28 @@ class FrequencyAnalysisTab(ttk.Frame):
         self.canvas.draw()
 
     def reset_zoom(self):
-        xlim = self.ax.get_xlim()
-        self.ax.set_xlim(0, xlim[1])
+        view = self.current_view.get()
+        if view == "Frecuencia":
+            # Para vista de frecuencia, usar la frecuencia de muestreo/2
+            if hasattr(self, 'current_fs'):
+                self.ax.set_xlim(0, self.current_fs/2)
+            else:
+                self.ax.set_xlim(0, 5000)  # valor por defecto
+        elif view in ["Espectrograma", "MFCC", "MFCC (Custom)", "Filter Banks (Custom)", "Filter Banks HTK"]:
+            # Para espectrograma y MFCC, usar la duración total de la señal
+            if hasattr(self, 'current_data') and hasattr(self, 'current_fs'):
+                self.ax.set_xlim(0, len(self.current_data)/self.current_fs)
+            else:
+                self.ax.set_xlim(0, 1)  # valor por defecto
+        else:
+            # Para otras vistas, restaurar a los valores por defecto
+            self.ax.set_xlim(0, 1)
+            
+        # También restaurar los límites Y si es necesario
+        if view in ["Espectrograma", "MFCC", "MFCC (Custom)", "Filter Banks (Custom)", "Filter Banks HTK"]:
+            if hasattr(self, 'current_fs'):
+                self.ax.set_ylim(0, self.current_fs/2)
+                
         self.canvas.draw()
 
     def save_current_view(self):
@@ -275,6 +295,8 @@ class FrequencyAnalysisTab(ttk.Frame):
             self.ax.set_xlabel("Tiempo [s]")
             self.ax.set_ylabel("Frecuencia [Hz]")
             self.ax.set_title(f"Espectrograma: {filename}")
+            self.ax.set_xlim(0, len(data)/fs)  # Establecer límites iniciales
+            self.ax.set_ylim(0, fs/2)
             self.colorbar = self.figure.colorbar(im, ax=self.ax, label="dB", orientation='vertical')
             self.figure.subplots_adjust(right=0.85)
             self.analysis_result_label.config(text="")
@@ -282,21 +304,54 @@ class FrequencyAnalysisTab(ttk.Frame):
             self.figure.clf()
             self.ax = self.figure.add_subplot(111)
             mfccs, fbanklog = self.mfcc_htk(data, fs)
-            im = self.ax.imshow(mfccs.T, aspect='auto', origin='lower', cmap=self.spectrogram_cmap.get(), extent=[0, len(data)/fs, 0, mfccs.shape[1]])
+
+            # Calcular frecuencias centrales de los filtros Mel (Hz) para eje Y
+            freq_min = 0
+            freq_high = fs / 2
+            mel_filter_num = 28
+            filter_points, mel_freqs, mels = self.get_filter_points(freq_min, freq_high, mel_filter_num, 256, sample_rate=fs)
+            # Centros de los filtros Mel (excluyendo los bordes)
+            hz_centers = self.met_to_freq(mels[1:-1])
+
+            t = np.linspace(0, len(data)/fs, mfccs.shape[0])
+            im = self.ax.imshow(mfccs.T, aspect='auto', origin='lower',
+                                cmap=self.spectrogram_cmap.get(),
+                                extent=[0, t[-1], hz_centers[0], hz_centers[-1]])
+
+            # Ticks del eje Y en Hz
+            yticks = np.linspace(hz_centers[0], hz_centers[-1], 6)
+            self.ax.set_yticks(yticks)
+            self.ax.set_yticklabels([f'{int(f)} Hz' for f in yticks])
+
             self.ax.set_xlabel("Tiempo [s]")
-            self.ax.set_ylabel("Coeficiente MFCC HTK")
+            self.ax.set_ylabel("Frecuencia [Hz]")
             self.ax.set_title(f"MFCC HTK: {filename}")
-            self.colorbar = self.figure.colorbar(im, ax=self.ax, label="Valor", orientation='vertical')
+            self.colorbar = self.figure.colorbar(im, ax=self.ax, label="Amplitud", orientation='vertical')
             self.figure.subplots_adjust(right=0.85)
             self.analysis_result_label.config(text="")
         elif view == "MFCC (Custom)":
             self.figure.clf()
             self.ax = self.figure.add_subplot(111)
             mfccs, t_mfcc, filter_banks = self.calcular_mfcc(data, fs)
-            im = self.ax.imshow(mfccs.T, aspect='auto', origin='lower', cmap=self.spectrogram_cmap.get(), extent=[t_mfcc[0], t_mfcc[-1], 0, mfccs.shape[1]])
+            
+            # Calcular las frecuencias Mel para el eje Y
+            fmin_mel = self.freq_to_mel(0)
+            fmax_mel = self.freq_to_mel(fs/2)
+            mel_freqs = np.linspace(fmin_mel, fmax_mel, mfccs.shape[1])
+            freq_ticks = self.met_to_freq(mel_freqs)  # Convertir a Hz
+            
+            im = self.ax.imshow(mfccs.T, aspect='auto', origin='lower', 
+                            cmap=self.spectrogram_cmap.get(), 
+                            extent=[t_mfcc[0], t_mfcc[-1], freq_ticks[0], freq_ticks[-1]])
+            
+            # Configurar ticks del eje Y en frecuencias
+            yticks = np.linspace(freq_ticks[0], freq_ticks[-1], 6)
+            self.ax.set_yticks(yticks)
+            self.ax.set_yticklabels([f'{int(f)} Hz' for f in yticks])
+            
             self.ax.set_xlabel("Tiempo [s]")
-            self.ax.set_ylabel("Coeficiente MFCC")
-            self.ax.set_title(f"MFCC Custom: {filename}")
+            self.ax.set_ylabel("Frecuencia [Hz]")
+            self.ax.set_title(f"MFCC Custom : {filename}")
             self.colorbar = self.figure.colorbar(im, ax=self.ax, label="Valor", orientation='vertical')
             self.figure.subplots_adjust(right=0.85)
             self.analysis_result_label.config(text="")
@@ -304,26 +359,53 @@ class FrequencyAnalysisTab(ttk.Frame):
             self.figure.clf()
             self.ax = self.figure.add_subplot(111)
             mfccs, t_mfcc, filter_banks = self.calcular_mfcc(data, fs)
-            # Convertir a dB para mejor visualización
-            # Ensure positive values and avoid log of zero
-            filter_banks_positive = np.maximum(filter_banks, 1e-10)
-            filter_banks_db = 20 * np.log10(filter_banks_positive)
-            im = self.ax.imshow(filter_banks_db.T, aspect='auto', origin='lower', cmap=self.spectrogram_cmap.get(), extent=[t_mfcc[0], t_mfcc[-1], 0, filter_banks.shape[1]])
+            
+            # Calcular las frecuencias Mel para el eje Y
+            fmin_mel = self.freq_to_mel(0)
+            fmax_mel = self.freq_to_mel(fs/2)
+            mel_freqs = np.linspace(fmin_mel, fmax_mel, filter_banks.shape[1])
+            freq_ticks = self.met_to_freq(mel_freqs)  # Convertir a Hz
+            
+            # Los filter_banks ya están en dB desde calcular_mfcc
+            im = self.ax.imshow(filter_banks.T, aspect='auto', origin='lower', 
+                            cmap=self.spectrogram_cmap.get(), 
+                            extent=[t_mfcc[0], t_mfcc[-1], freq_ticks[0], freq_ticks[-1]])
+            
+            # Configurar ticks del eje Y en frecuencias
+            yticks = np.linspace(freq_ticks[0], freq_ticks[-1], 6)
+            self.ax.set_yticks(yticks)
+            self.ax.set_yticklabels([f'{int(f)} Hz' for f in yticks])
+            
             self.ax.set_xlabel("Tiempo [s]")
-            self.ax.set_ylabel("Filtro Mel")
+            self.ax.set_ylabel("Frecuencia [Hz]")
             self.ax.set_title(f"Filter Banks Custom: {filename}")
             self.colorbar = self.figure.colorbar(im, ax=self.ax, label="Energía (dB)", orientation='vertical')
             self.figure.subplots_adjust(right=0.85)
             self.analysis_result_label.config(text="")
-        elif view == "Mel (Log)":
+        elif view == "Filter Banks HTK":
             # Nueva vista: muestra el espectro mel (log-mel filterbank)
             self.figure.clf()
             self.ax = self.figure.add_subplot(111)
             mfccs, fbanklog = self.mfcc_htk(data, fs)
-            im = self.ax.imshow(fbanklog.T, aspect='auto', origin='lower', cmap=self.spectrogram_cmap.get(), extent=[0, len(data)/fs, 0, fbanklog.shape[1]])
+            
+            # Calcular las frecuencias Mel para el eje Y
+            fmin_mel = self.freq_to_mel(0)
+            fmax_mel = self.freq_to_mel(fs/2)
+            mel_freqs = np.linspace(fmin_mel, fmax_mel, fbanklog.shape[1])
+            freq_ticks = self.met_to_freq(mel_freqs)  # Convertir a Hz
+            
+            im = self.ax.imshow(fbanklog.T, aspect='auto', origin='lower', 
+                            cmap=self.spectrogram_cmap.get(), 
+                            extent=[0, len(data)/fs, freq_ticks[0], freq_ticks[-1]])
+            
+            # Configurar ticks del eje Y en frecuencias
+            yticks = np.linspace(freq_ticks[0], freq_ticks[-1], 6)
+            self.ax.set_yticks(yticks)
+            self.ax.set_yticklabels([f'{int(f)} Hz' for f in yticks])
+            
             self.ax.set_xlabel("Tiempo [s]")
-            self.ax.set_ylabel("Canal Mel")
-            self.ax.set_title(f"Mel (Log) - Espectro Mel: {filename}")
+            self.ax.set_ylabel("Frecuencia [Hz]")
+            self.ax.set_title(f"Filter Banks HTK : {filename}")
             self.colorbar = self.figure.colorbar(im, ax=self.ax, label="Log energía", orientation='vertical')
             self.figure.subplots_adjust(right=0.85)
             self.analysis_result_label.config(text="")
@@ -504,12 +586,41 @@ class FrequencyAnalysisTab(ttk.Frame):
         audio_fft = np.transpose(audio_fft)
         return audio_fft
     
-    def segmentacion(self, audio, FFT_size=2048, hop_size=10, sample_rate=44100):
+    def segmentacionhtk(self, audio, FFT_size=2048, hop_size=10, sample_rate=44100):
         frame_len = np.round(sample_rate * hop_size / 1000).astype(int)
         frame_num = int((len(audio) - FFT_size) / frame_len) + 1
         frames = np.zeros((frame_num,FFT_size))
         for n in range(frame_num):
             frames[n] = audio[n*frame_len:n*frame_len+FFT_size]
+        return frames
+    
+    def segmentacion(self, audio, frame_size, hop_size, sample_rate=None):
+        """
+        Divide la señal en frames usando el mismo método que HTK.
+        Args:
+            audio: señal de audio
+            frame_size: tamaño del frame en muestras
+            hop_size: salto entre frames en muestras
+            sample_rate: frecuencia de muestreo (opcional, no usado)
+        Returns:
+            frames: matriz de frames
+        """
+        # Calcular número de frames como HTK
+        signal_length = len(audio)
+        num_frames = int(np.ceil(float(signal_length - frame_size + hop_size) / hop_size))
+        
+        # Crear matriz de frames con padding si es necesario
+        pad_length = (num_frames - 1) * hop_size + frame_size
+        if pad_length > signal_length:
+            pad_signal = np.append(audio, np.zeros(pad_length - signal_length))
+        else:
+            pad_signal = audio
+            
+        frames = np.zeros((num_frames, frame_size))
+        for i in range(num_frames):
+            start = i * hop_size
+            frames[i] = pad_signal[start:start + frame_size]
+            
         return frames
     
     def cargaAudio(self, path, sr=None, mono=True, dtype=np.float32, resample_limit_denominator=1000):
@@ -590,7 +701,7 @@ class FrequencyAnalysisTab(ttk.Frame):
             if (k < 2 or k > Nby2):
                 fblowChan [k] = -1
             else:
-            # print (melk)
+                #print (melk)
                 #print (mels[chan])
                 while (mels[chan] < melk and chan <= maxChan):
                     chan+=1
@@ -677,11 +788,12 @@ class FrequencyAnalysisTab(ttk.Frame):
         fmax_mel = self.freq_to_mel(fmax)
         mels = np.linspace(fmin_mel, fmax_mel, num=mel_filter_num + 2)
         freqs = self.met_to_freq(mels)
-        return np.floor((FFT_size + 1) / sample_rate * freqs).astype(int), freqs, mels
+        filter_points = np.floor((FFT_size + 1) * freqs / sample_rate).astype(int)
+        return filter_points, freqs, mels
 
     
     
-    def mfcc_htk(self,signal=None,sample_rate=None):
+    def mfcc_htk(self, signal=None, sample_rate=None):
         """
         Calcula los coeficientes MFCC usando el método HTK.
         Args:
@@ -693,25 +805,25 @@ class FrequencyAnalysisTab(ttk.Frame):
         # Framing
         pre_emphasis = 0.97
         emphasized = self.preenfasis(signal, pre_emphasis_coeff=pre_emphasis)
-        audio=emphasized
+        audio = emphasized
         hop_size = 10  # ms
         FFT_size = 256
-        audio_framed = self.segmentacion(audio, FFT_size=FFT_size, hop_size=hop_size, sample_rate=sample_rate)
+        audio_framed = self.segmentacionhtk(audio, FFT_size=FFT_size, hop_size=hop_size, sample_rate=sample_rate)
         print('Framed audio shape:', audio_framed.shape)
         frame_len = int(np.round(sample_rate * hop_size / 1000.0))
         frame_num = int((len(audio) - FFT_size) / frame_len) + 1
         for n in range(frame_num):
             for i in range(FFT_size - 1, 0, -1):
-                audio_framed[n, i] =self.preenfasis(audio_framed[n, :], pre_emphasis_coeff=pre_emphasis)[i]
+                audio_framed[n, i] = self.preenfasis(audio_framed[n, :], pre_emphasis_coeff=pre_emphasis)[i]
 
         # Windowing
         audio_win = self.ventaneo(audio, FFT_size, frame_len, window_type='hamming')
 
-        # FFT
+        # FFT (usar audioFFT y su magnitud)
         audio_fft = self.audioFFT(audio_win, FFT_size=FFT_size)
-        audio_fft = np.abs(audio_fft)
-        print('FFT (magnitude):\n', audio_fft)
-        
+        mag_frames = np.abs(audio_fft)
+        print('FFT (magnitude):\n', mag_frames)
+
         # Mel filter bank
         freq_min = 0
         freq_high = sample_rate / 2
@@ -720,8 +832,7 @@ class FrequencyAnalysisTab(ttk.Frame):
 
         lowChan = self.do_melk(filter_points, FFT_size, mel_filter_num, mels, sample_rate)
         lowWt = self.create_vector_lowerChanWeights(filter_points, FFT_size, lowChan, mels, sample_rate)
-        audio_window = audio_win
-        mag_frames = np.absolute(np.fft.fft((audio_window), FFT_size))  # Magnitude of the FFT
+        # Usar mag_frames en lugar de recalcular la FFT
         fbank = self.fill_bins(mag_frames, lowChan, lowWt, mel_filter_num, FFT_size)
         fbanklog = self.take_logs(fbank, mel_filter_num)
 
@@ -731,6 +842,7 @@ class FrequencyAnalysisTab(ttk.Frame):
         # Retornar tanto los MFCCs como el log-mel filterbank para visualización adicional
         # mfcc_htk: (n_frames, n_mfcc)
         # fbanklog: (n_frames, n_mel_bins+1)
+        print('########### MFCC HTK & Log-Mel Filterbank Calculos ###########')
         print('MFCC HTK shape:', mfcc_htk.shape)
         print('MFCC HTK (frames):\n', mfcc_htk)
         print('Log-Mel Filterbank shape:', fbanklog.shape)
@@ -738,15 +850,15 @@ class FrequencyAnalysisTab(ttk.Frame):
         return mfcc_htk, fbanklog
     
     
-    def calcular_mfcc(self, data, fs, n_mfcc=28, win_len=0.025, hop_len=0.01):
+    def calcular_mfcc(self, data, fs, n_mfcc=12, win_len=0.025, hop_len=0.01):
         """
         Calcula los coeficientes MFCC de una señal de audio sin librerías externas.
         Args:
             data: señal de audio (numpy array)
             fs: frecuencia de muestreo
-            n_mfcc: número de coeficientes MFCC
-            win_len: longitud de ventana en segundos
-            hop_len: salto entre ventanas en segundos
+            n_mfcc: número de coeficientes MFCC (por defecto 12 como HTK)
+            win_len: longitud de ventana en segundos (por defecto 25ms como HTK)
+            hop_len: salto entre ventanas en segundos (por defecto 10ms como HTK)
         Returns:
             mfccs: matriz de coeficientes MFCC (ventanas x coeficientes)
             t_mfcc: vector de tiempo de cada ventana
@@ -754,49 +866,49 @@ class FrequencyAnalysisTab(ttk.Frame):
         """
         # 1. Pre-emphasis
         emphasized = self.preenfasis(data, pre_emphasis_coeff=0.97)
-        # 2. framentación
-        frame_len = int(win_len * fs)
-        frame_step = int(hop_len * fs)
-        signal_length = len(emphasized)
-        num_frames = int(np.ceil(float(np.abs(signal_length - frame_len)) / frame_step))
-        pad_signal_length = num_frames * frame_step + frame_len
-        z = np.zeros((pad_signal_length - signal_length))
-        pad_signal = np.append(emphasized, z)
-        frames = self.segmentacion(pad_signal, frame_len, frame_step, fs)
+        # 2. Framentación
+        frame_len = int(win_len * fs)  # 25ms * fs
+        frame_step = int(hop_len * fs)  # 10ms * fs
+        frames = self.segmentacion(emphasized, frame_len, frame_step, fs)
         # 3. Ventanamiento
         frames *= self.ventaneo(np.ones(frame_len), frame_len, frame_len, window_type='hamming')[0]
         # 4. FFT y Power Spectrum
-        NFFT = 256
+        NFFT = 512  # Como HTK
         mag_frames = np.absolute(np.fft.rfft(frames, NFFT))
         pow_frames = ((1.0 / NFFT) * (mag_frames ** 2))
-        # 5. Filtro de bancos Mel
-        nfilt = 28
-        low_freq_mel = 0
-        high_freq_mel = 2595 * np.log10(1 + (fs / 2) / 700)
-        mel_points = np.linspace(low_freq_mel, high_freq_mel, nfilt + 2)
-        hz_points = 700 * (10**(mel_points / 2595) - 1)
-        bin = np.floor((NFFT + 1) * hz_points / fs).astype(int)
-        fbank = np.zeros((nfilt, int(NFFT / 2 + 1)))
-        #Ventanas triangulares
-        for m in range(1, nfilt + 1):
-            f_m_minus = bin[m - 1]
-            f_m = bin[m]
-            f_m_plus = bin[m + 1]
-            for k in range(f_m_minus, f_m):
-                fbank[m - 1, k] = (k - bin[m - 1]) / (bin[m] - bin[m - 1])
-            for k in range(f_m, f_m_plus):
-                fbank[m - 1, k] = (bin[m + 1] - k) / (bin[m + 1] - bin[m])
+
+        # 5. Crear y aplicar filtros Mel
+        low_freq_mel = self.freq_to_mel(0)
+        high_freq_mel = self.freq_to_mel(fs/2)
+        n_filt = 29  # Como HTK
+        mel_points = np.linspace(low_freq_mel, high_freq_mel, n_filt + 2)
+        hz_points = self.met_to_freq(mel_points)
+        bin_points = np.floor((NFFT + 1) * hz_points / fs).astype(int)
+
+        # Crear matriz de filter banks
+        fbank = np.zeros((n_filt, NFFT // 2 + 1))
+        # Construir los filtros triangulares
+        for i in range(n_filt):
+            for j in range(int(bin_points[i]), int(bin_points[i + 1])):
+                fbank[i, j] = (j - bin_points[i]) / (bin_points[i + 1] - bin_points[i])
+            for j in range(int(bin_points[i + 1]), int(bin_points[i + 2])):
+                fbank[i, j] = (bin_points[i + 2] - j) / (bin_points[i + 2] - bin_points[i + 1])
+        # Normalizar los filtros
+        fbank = fbank / np.maximum(np.sum(fbank, axis=1)[:, np.newaxis], 1e-8)
+        # Aplicar los filter banks
         filter_banks = np.dot(pow_frames, fbank.T)
-        filter_banks = np.where(filter_banks == 0, np.finfo(float).eps, filter_banks)
+        # Convertir a dB y manejar valores pequeños
+        filter_banks = np.where(filter_banks <= 0, np.finfo(float).eps, filter_banks)
         filter_banks = 20 * np.log10(filter_banks)
-        # 6. Coficientes para DCT para obtener MFCC
+        # 6. Coeficientes DCT para obtener MFCC (sin transponer)
         mfccs = dct(filter_banks, type=2, axis=1, norm='ortho')[:, :n_mfcc]
         # 7. Tiempo de cada ventana
-        t_mfcc = np.arange(mfccs.shape[0]) * hop_len
+        t_mfcc = np.arange(len(mfccs)) * hop_len
+        print('##############MFCC Custom calculated###############')
         print('MFCC Custom shape:', mfccs.shape)
         print('MFCC Custom (frames):\n', mfccs)
-        print('Filter Banks shape:', filter_banks.shape)
-        print('Filter Banks (frames):\n', filter_banks)
+        print('Filter Banks Custom shape:', filter_banks.shape)
+        print('Filter Banks Custom (frames):\n', filter_banks)
         return mfccs, t_mfcc, filter_banks
     ############################################################################
     ##################### CALCULO LPC ##########################################
