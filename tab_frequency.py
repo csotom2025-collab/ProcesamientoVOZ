@@ -685,7 +685,9 @@ class FrequencyAnalysisTab(ttk.Frame):
 
     def Melk(self, k, fres):
         return 1127.0 * np.log(1.0 + (k - 1) * fres)
-
+    
+    def omaFreq(self, k, fres):
+        return 'Ecuacion de homar'
 
     def do_melk(self,filter_points, FFT_size, num_chan, mels, sample_rate):
         fres = sample_rate/(FFT_size*700)
@@ -873,7 +875,7 @@ class FrequencyAnalysisTab(ttk.Frame):
         # 3. Ventanamiento
         frames *= self.ventaneo(np.ones(frame_len), frame_len, frame_len, window_type='hamming')[0]
         # 4. FFT y Power Spectrum
-        NFFT = 512  # Como HTK
+        NFFT = 256  # Como HTK
         mag_frames = np.absolute(np.fft.rfft(frames, NFFT))
         pow_frames = ((1.0 / NFFT) * (mag_frames ** 2))
 
